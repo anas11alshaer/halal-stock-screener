@@ -33,22 +33,18 @@ screener = StockScreener()
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
-    welcome_message = """Welcome to the Halal Stock Screener Bot! 📊
+    welcome_message = """<b>Halal Stock Screener</b>
 
-I can help you check if stocks are Shariah-compliant using data from Musaffa.com.
+Check if stocks are Shariah-compliant using Musaffa.com data.
 
-<b>How to use:</b>
-• Send a ticker symbol (e.g., <code>AAPL</code> or <code>$MSFT</code>)
-• Send multiple tickers separated by spaces
-• Send an image containing stock tickers
+<b>Usage</b>
+Send ticker symbols: <code>AAPL</code> <code>MSFT</code> <code>GOOGL</code>
+Or send an image with stock tickers.
 
-<b>Commands:</b>
-• /check &lt;ticker&gt; - Check a specific stock
-• /history - View your recent checks
-• /stats - View your screening statistics
-• /help - Show this help message
-
-Let's get started! Send me a ticker symbol to check."""
+<b>Commands</b>
+/check <code>AAPL</code> - Check specific stocks
+/history - Recent checks
+/stats - Your statistics"""
 
     await update.message.reply_text(welcome_message, parse_mode="HTML")
 
@@ -62,7 +58,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /check <ticker> command."""
     if not context.args:
         await update.message.reply_text(
-            "Please provide a ticker symbol.\nUsage: <code>/check AAPL</code>",
+            "Usage: <code>/check AAPL MSFT</code>",
             parse_mode="HTML"
         )
         return
@@ -70,10 +66,10 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     tickers = [arg.upper() for arg in context.args]
 
-    await update.message.reply_text(f"Checking {', '.join(tickers)}...")
+    status_msg = await update.message.reply_text("Checking...")
 
     response = await screener.screen_tickers(tickers, user_id)
-    await update.message.reply_text(response.format_message(), parse_mode="HTML")
+    await status_msg.edit_text(response.format_message(), parse_mode="HTML")
 
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,22 +78,22 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = screener.get_user_history(user_id, limit=15)
 
     if not history:
-        await update.message.reply_text("You haven't checked any stocks yet.")
+        await update.message.reply_text("No history yet. Send a ticker to get started.")
         return
 
-    lines = ["<b>Your Recent Checks:</b>\n"]
-    for entry in history:
-        status_emoji = {
-            "HALAL": "✅",
-            "NOT_HALAL": "❌",
-            "DOUBTFUL": "⚠️",
-            "NOT_COVERED": "❓",
-            "ERROR": "⚠️"
-        }.get(entry["status"], "❓")
+    status_emoji = {
+        "HALAL": "✅",
+        "NOT_HALAL": "❌",
+        "DOUBTFUL": "⚠️",
+        "NOT_COVERED": "❓",
+        "ERROR": "⚠️"
+    }
 
-        # Parse timestamp
-        timestamp = entry["checked_at"][:16].replace("T", " ")
-        lines.append(f"{status_emoji} {entry['ticker']} - {timestamp}")
+    lines = ["<b>Recent Checks</b>\n"]
+    for entry in history:
+        emoji = status_emoji.get(entry["status"], "❓")
+        date = entry["checked_at"][:10]
+        lines.append(f"{emoji} <code>{entry['ticker']}</code>  {date}")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -108,27 +104,28 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = screener.get_user_stats(user_id)
 
     if stats["total_checks"] == 0:
-        await update.message.reply_text("You haven't checked any stocks yet.")
+        await update.message.reply_text("No statistics yet. Send a ticker to get started.")
         return
 
+    # Build stats message
     lines = [
-        "<b>Your Screening Statistics:</b>\n",
-        f"Total checks: {stats['total_checks']}",
-        f"Unique tickers: {stats['unique_tickers']}",
-        "\n<b>Status Breakdown:</b>"
+        "<b>Your Statistics</b>\n",
+        f"Total checks: <b>{stats['total_checks']}</b>",
+        f"Unique stocks: <b>{stats['unique_tickers']}</b>",
+        ""
     ]
 
-    status_labels = {
-        "HALAL": "✅ Halal",
-        "NOT_HALAL": "❌ Not Halal",
-        "DOUBTFUL": "⚠️ Doubtful",
-        "NOT_COVERED": "❓ Not Covered",
-        "ERROR": "⚠️ Error"
-    }
+    status_config = [
+        ("HALAL", "✅ Halal"),
+        ("NOT_HALAL", "❌ Not Halal"),
+        ("DOUBTFUL", "⚠️ Doubtful"),
+        ("NOT_COVERED", "❓ Not Covered"),
+    ]
 
-    for status, count in stats["status_breakdown"].items():
-        label = status_labels.get(status, status)
-        lines.append(f"  {label}: {count}")
+    breakdown = stats["status_breakdown"]
+    for key, label in status_config:
+        if key in breakdown and breakdown[key] > 0:
+            lines.append(f"{label}: {breakdown[key]}")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -138,34 +135,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
 
-    if not text:
+    if not text or text.startswith("/"):
         return
 
-    # Skip if it looks like a command
-    if text.startswith("/"):
-        return
-
-    await update.message.reply_text("Analyzing...")
+    status_msg = await update.message.reply_text("Checking...")
 
     response = await screener.screen_text(text, user_id)
 
     if response.error and "No tickers" in response.error:
-        await update.message.reply_text(
-            "I couldn't identify any stock tickers in your message.\n\n"
-            "Try sending:\n"
-            "• A ticker like <code>AAPL</code> or <code>$MSFT</code>\n"
-            "• Multiple tickers like <code>AAPL GOOGL TSLA</code>",
+        await status_msg.edit_text(
+            "No tickers found.\n\nTry: <code>AAPL</code> or <code>AAPL MSFT GOOGL</code>",
             parse_mode="HTML"
         )
     else:
-        await update.message.reply_text(response.format_message(), parse_mode="HTML")
+        await status_msg.edit_text(response.format_message(), parse_mode="HTML")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle photo messages."""
     user_id = update.effective_user.id
 
-    await update.message.reply_text("Analyzing image for stock tickers...")
+    status_msg = await update.message.reply_text("Analyzing image...")
 
     # Get the largest photo
     photo = update.message.photo[-1]
@@ -177,7 +167,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_data = buffer.getvalue()
 
     response = await screener.screen_image(image_data, user_id)
-    await update.message.reply_text(response.format_message(), parse_mode="HTML")
+    await status_msg.edit_text(response.format_message(), parse_mode="HTML")
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,7 +176,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update and update.effective_message:
         await update.effective_message.reply_text(
-            "Sorry, something went wrong. Please try again later."
+            "Something went wrong. Please try again."
         )
 
 
@@ -198,27 +188,25 @@ def main():
 
     logger.info("Starting Stock Screener Bot...")
 
-    # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Add command handlers
+    # Command handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("check", check_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("stats", stats_command))
 
-    # Add message handlers
+    # Message handlers
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    # Add error handler
+    # Error handler
     application.add_error_handler(error_handler)
 
     # Clear expired cache on startup
     screener.clear_expired_cache()
 
-    # Run the bot
     logger.info("Bot is running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

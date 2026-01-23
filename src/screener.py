@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from scraper import MusaffaScraper, ScreeningResult, ComplianceStatus
-from image_parser import ImageParser, parse_text_for_tickers
+from image_parser import ImageParser, parse_text_for_tickers, QuotaExceededError
 from database import TickerCache, CheckHistory, init_database
 
 logger = logging.getLogger(__name__)
@@ -23,36 +23,52 @@ class ScreenResponse:
         import html
 
         if self.error:
-            return f"❌ Error: {html.escape(self.error)}"
+            return f"❌ {html.escape(self.error)}"
 
         if not self.results:
             return "No tickers found to screen."
 
+        # Group results by status
+        halal = []
+        not_halal = []
+        doubtful = []
+        other = []
+
+        for result in self.results:
+            if result.status == ComplianceStatus.HALAL:
+                halal.append(result.ticker)
+            elif result.status == ComplianceStatus.NOT_HALAL:
+                not_halal.append(result.ticker)
+            elif result.status == ComplianceStatus.DOUBTFUL:
+                doubtful.append(result.ticker)
+            else:
+                other.append(result.ticker)
+
         lines = []
-        for result, cached in zip(self.results, self.from_cache):
-            status_emoji = {
-                ComplianceStatus.HALAL: "✅",
-                ComplianceStatus.NOT_HALAL: "❌",
-                ComplianceStatus.DOUBTFUL: "⚠️",
-                ComplianceStatus.NOT_COVERED: "❓",
-                ComplianceStatus.ERROR: "⚠️"
-            }.get(result.status, "❓")
 
-            line = f"{status_emoji} <b>{html.escape(result.ticker)}</b>: {html.escape(result.status.value)}"
+        # Summary header
+        total = len(self.results)
+        lines.append(f"<b>Screened {total} stock{'s' if total > 1 else ''}</b>\n")
 
-            if result.company_name:
-                line += f"\n   {html.escape(result.company_name)}"
+        # Halal stocks
+        if halal:
+            tickers_str = ", ".join(f"<code>{t}</code>" for t in halal)
+            lines.append(f"✅ <b>Halal ({len(halal)})</b>\n{tickers_str}")
 
-            if result.compliance_ranking:
-                line += f"\n   Ranking: {html.escape(result.compliance_ranking)}"
+        # Not Halal stocks
+        if not_halal:
+            tickers_str = ", ".join(f"<code>{t}</code>" for t in not_halal)
+            lines.append(f"❌ <b>Not Halal ({len(not_halal)})</b>\n{tickers_str}")
 
-            if result.error_message:
-                line += f"\n   <i>{html.escape(result.error_message)}</i>"
+        # Doubtful stocks
+        if doubtful:
+            tickers_str = ", ".join(f"<code>{t}</code>" for t in doubtful)
+            lines.append(f"⚠️ <b>Doubtful ({len(doubtful)})</b>\n{tickers_str}")
 
-            if cached:
-                line += " (cached)"
-
-            lines.append(line)
+        # Other (not covered, errors)
+        if other:
+            tickers_str = ", ".join(f"<code>{t}</code>" for t in other)
+            lines.append(f"❓ <b>Not Covered ({len(other)})</b>\n{tickers_str}")
 
         return "\n\n".join(lines)
 
@@ -202,12 +218,18 @@ class StockScreener:
 
         try:
             tickers = await self.image_parser.extract_tickers(image_data)
+        except QuotaExceededError:
+            return ScreenResponse(
+                results=[],
+                from_cache=[],
+                error="Image analysis quota exceeded. Please try again later or send ticker symbols as text."
+            )
         except Exception as e:
             logger.error(f"Error extracting tickers from image: {e}")
             return ScreenResponse(
                 results=[],
                 from_cache=[],
-                error=f"Failed to analyze image: {str(e)}"
+                error="Failed to analyze image. Please try again or send ticker symbols as text."
             )
 
         if not tickers:
