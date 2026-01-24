@@ -22,16 +22,81 @@ MIN_REQUEST_INTERVAL = 1.0
 MAX_RETRIES = 3
 INITIAL_BACKOFF = 1.0  # seconds
 
+# Quota cooldown: pause API calls after quota error (5 minutes)
+QUOTA_COOLDOWN_SECONDS = 300
+_quota_cooldown_until: float = 0  # Global cooldown timestamp
+
 # Common false positives that look like tickers but aren't
 FALSE_POSITIVE_TICKERS = {
-    "CEO", "CFO", "CTO", "COO", "IPO", "ETF", "USD", "EUR", "GBP",
-    "NYSE", "NASDAQ", "OTC", "SEC", "FDA", "USA", "API", "PDF",
-    "THE", "AND", "FOR", "ARE", "NOT", "YOU", "ALL", "CAN", "HAD",
-    "HER", "WAS", "ONE", "OUR", "OUT", "HAS", "HIS", "HOW", "MAN",
-    "NEW", "NOW", "OLD", "SEE", "WAY", "WHO", "BOY", "DID", "GET",
-    "LET", "PUT", "SAY", "SHE", "TOO", "USE", "INC", "LLC", "LTD",
-    "PLC", "EST", "YTD", "QTR", "AVG", "MAX", "MIN", "TOP", "BUY",
-    "SELL", "HOLD", "CALL", "LONG", "SHORT", "CASH", "DEBT",
+    "CEO",
+    "CFO",
+    "CTO",
+    "COO",
+    "IPO",
+    "ETF",
+    "USD",
+    "EUR",
+    "GBP",
+    "NYSE",
+    "NASDAQ",
+    "OTC",
+    "SEC",
+    "FDA",
+    "USA",
+    "API",
+    "PDF",
+    "THE",
+    "AND",
+    "FOR",
+    "ARE",
+    "NOT",
+    "YOU",
+    "ALL",
+    "CAN",
+    "HAD",
+    "HER",
+    "WAS",
+    "ONE",
+    "OUR",
+    "OUT",
+    "HAS",
+    "HIS",
+    "HOW",
+    "MAN",
+    "NEW",
+    "NOW",
+    "OLD",
+    "SEE",
+    "WAY",
+    "WHO",
+    "BOY",
+    "DID",
+    "GET",
+    "LET",
+    "PUT",
+    "SAY",
+    "SHE",
+    "TOO",
+    "USE",
+    "INC",
+    "LLC",
+    "LTD",
+    "PLC",
+    "EST",
+    "YTD",
+    "QTR",
+    "AVG",
+    "MAX",
+    "MIN",
+    "TOP",
+    "BUY",
+    "SELL",
+    "HOLD",
+    "CALL",
+    "LONG",
+    "SHORT",
+    "CASH",
+    "DEBT",
 }
 
 
@@ -48,6 +113,7 @@ def is_valid_ticker(ticker: str) -> bool:
 
 class QuotaExceededError(Exception):
     """Raised when Gemini API quota is exceeded."""
+
     pass
 
 
@@ -59,7 +125,7 @@ class ImageParser:
             raise ValueError("GEMINI_API_KEY is not set in environment variables")
 
         self.client = genai.Client(api_key=GEMINI_API_KEY)
-        self.model_name = "gemini-2.0-flash-lite"  # Faster, lighter model
+        self.model_name = "gemini-2.5-flash-lite"  # Faster, lighter model
         self._last_request_time: float = 0
         self._rate_limit_lock = asyncio.Lock()
         self.image_cache = image_cache  # Optional ImageCache instance
@@ -89,6 +155,16 @@ class ImageParser:
         Raises:
             QuotaExceededError: If API quota is exceeded after all retries
         """
+        global _quota_cooldown_until
+
+        # Check if we're in cooldown period after quota error
+        if time.time() < _quota_cooldown_until:
+            remaining = int(_quota_cooldown_until - time.time())
+            logger.warning(f"Quota cooldown active, {remaining}s remaining")
+            raise QuotaExceededError(
+                f"Daily quota exceeded. Please wait {remaining // 60} minutes or try again later."
+            )
+
         # Check cache first
         image_hash = self.compute_image_hash(image_data)
         if self.image_cache:
@@ -128,8 +204,7 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
 
             try:
                 image_part = types.Part.from_bytes(
-                    data=image_data,
-                    mime_type="image/jpeg"
+                    data=image_data, mime_type="image/jpeg"
                 )
 
                 response = await self.client.aio.models.generate_content(
@@ -150,25 +225,45 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                 return tickers
 
             except Exception as e:
-                error_str = str(e)
-                is_rate_limit = "429" in error_str or "quota" in error_str.lower()
+                error_str = str(e).lower()
+                logger.error(f"Gemini API error (attempt {attempt + 1}): {e}")
 
-                if is_rate_limit:
+                # Check for various quota/rate limit indicators
+                is_quota_error = any(x in error_str for x in [
+                    "429", "quota", "rate limit", "resource exhausted",
+                    "too many requests", "limit exceeded"
+                ])
+
+                if is_quota_error:
                     last_exception = e
-                    if attempt < MAX_RETRIES - 1:
-                        backoff = INITIAL_BACKOFF * (2 ** attempt)
-                        logger.warning(f"Rate limited, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})")
-                        await asyncio.sleep(backoff)
-                        continue
-                    else:
-                        logger.warning("Gemini API quota exceeded after all retries")
-                        raise QuotaExceededError("API quota exceeded. Please try again later.")
+                    # Check if it's a daily quota (not just rate limit)
+                    is_daily_quota = "daily" in error_str or "per day" in error_str
 
+                    if is_daily_quota or attempt >= MAX_RETRIES - 1:
+                        # Set cooldown to prevent hammering the API
+                        _quota_cooldown_until = time.time() + QUOTA_COOLDOWN_SECONDS
+                        logger.warning(
+                            f"Quota exceeded, cooldown set for {QUOTA_COOLDOWN_SECONDS}s"
+                        )
+                        raise QuotaExceededError(
+                            "API quota exceeded. Please wait a few minutes or try again later."
+                        )
+
+                    # Retry with backoff for rate limits
+                    backoff = INITIAL_BACKOFF * (2 ** attempt)
+                    logger.warning(
+                        f"Rate limited, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})"
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+
+                # Non-quota error - don't retry
                 logger.error(f"Error extracting tickers from image: {e}")
                 return []
 
         # Should not reach here, but just in case
         if last_exception:
+            _quota_cooldown_until = time.time() + QUOTA_COOLDOWN_SECONDS
             raise QuotaExceededError("API quota exceeded. Please try again later.")
         return []
 
@@ -183,9 +278,7 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                 json_str = json_match.group(1)
             else:
                 # Try to find raw JSON
-                json_match = re.search(
-                    r'(\{.*"tickers".*\})', response_text, re.DOTALL
-                )
+                json_match = re.search(r'(\{.*"tickers".*\})', response_text, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(1)
                 else:
