@@ -1,5 +1,11 @@
 [phases.setup]
-nixPkgs = ["chromium"]
+nixPkgs = ["python311", "python311Packages.pip", "chromium"]
+
+[phases.install]
+dependsOn = ["setup"]
+
+[start]
+cmd = "python src/bot.py"
 
 [variables]
 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
