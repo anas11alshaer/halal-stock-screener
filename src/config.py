@@ -32,6 +32,7 @@ DATABASE_PATH = DATA_DIR / "stock_screener.db"
 
 # Scraping configuration
 MUSAFFA_BASE_URL = "https://musaffa.com/stock"
+ZOYA_BASE_URL = "https://zoya.finance/stocks"
 REQUEST_TIMEOUT = 30  # seconds
 MAX_RETRIES = 3
 RETRY_DELAY = 1  # seconds (base for exponential backoff)

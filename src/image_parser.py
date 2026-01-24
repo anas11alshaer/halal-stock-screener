@@ -1,12 +1,14 @@
 """Gemini-based image parser for extracting stock tickers."""
 
+import base64
 import json
 import logging
 import re
 import time
 from typing import Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from config import GEMINI_API_KEY
 
@@ -28,8 +30,8 @@ class ImageParser:
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is not set in environment variables")
 
-        genai.configure(api_key=GEMINI_API_KEY)
-        self.model = genai.GenerativeModel("gemini-2.5-flash")
+        self.client = genai.Client(api_key=GEMINI_API_KEY)
+        self.model_name = "gemini-2.5-flash"
         self._last_request_time: float = 0
 
     def _rate_limit(self):
@@ -78,14 +80,15 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
         self._rate_limit()
 
         try:
-            image_part = {
-                "mime_type": "image/jpeg",
-                "data": image_data,
-            }
+            image_part = types.Part.from_bytes(
+                data=image_data,
+                mime_type="image/jpeg"
+            )
 
-            response = await self.model.generate_content_async(
-                [prompt, image_part],
-                generation_config=genai.GenerationConfig(
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=[prompt, image_part],
+                config=types.GenerateContentConfig(
                     temperature=0.1,
                     max_output_tokens=1024,
                 ),

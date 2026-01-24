@@ -1,10 +1,13 @@
 """Core screening logic that orchestrates the full check flow."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Optional
 
 from scraper import MusaffaScraper, ScreeningResult, ComplianceStatus
+from zoya_scraper import ZoyaScraper
+from resolver import resolve_compliance
 from image_parser import ImageParser, parse_text_for_tickers, QuotaExceededError
 from database import TickerCache, CheckHistory, init_database
 
@@ -28,56 +31,90 @@ class ScreenResponse:
         if not self.results:
             return "No tickers found to screen."
 
+        # Single ticker: detailed view
+        if len(self.results) == 1:
+            return self._format_single_ticker(self.results[0])
+
+        # Multiple tickers: grouped view
+        return self._format_multiple_tickers()
+
+    def _format_single_ticker(self, result: ScreeningResult) -> str:
+        """Format a single ticker result with details."""
+        status_display = {
+            ComplianceStatus.HALAL: ("✅", "Halal"),
+            ComplianceStatus.NOT_HALAL: ("❌", "Not Halal"),
+            ComplianceStatus.DOUBTFUL: ("⚠️", "Doubtful"),
+            ComplianceStatus.NOT_COVERED: ("❓", "Not Covered"),
+            ComplianceStatus.ERROR: ("⚠️", "Error"),
+        }
+
+        icon, status_text = status_display.get(result.status, ("❓", "Unknown"))
+
+        lines = [f"<b>{result.ticker}</b>"]
+
+        # Company name if available
+        if result.company_name:
+            lines[0] = f"<b>{result.ticker}</b>  •  {result.company_name}"
+
+        # Status line
+        lines.append(f"{icon} <b>{status_text}</b>")
+
+        # Compliance ranking if available
+        if result.compliance_ranking:
+            lines.append(f"📊 Ranking: {result.compliance_ranking}")
+
+        # Show conflict info if present in details
+        if result.details and "Conflict:" in result.details:
+            lines.append(f"⚡ {result.details}")
+
+        return "\n".join(lines)
+
+    def _format_multiple_tickers(self) -> str:
+        """Format multiple ticker results in a clean grouped view."""
         # Group results by status
-        halal = []
-        not_halal = []
-        doubtful = []
+        groups = {
+            ComplianceStatus.HALAL: [],
+            ComplianceStatus.NOT_HALAL: [],
+            ComplianceStatus.DOUBTFUL: [],
+        }
         other = []
 
         for result in self.results:
-            if result.status == ComplianceStatus.HALAL:
-                halal.append(result.ticker)
-            elif result.status == ComplianceStatus.NOT_HALAL:
-                not_halal.append(result.ticker)
-            elif result.status == ComplianceStatus.DOUBTFUL:
-                doubtful.append(result.ticker)
+            if result.status in groups:
+                groups[result.status].append(result.ticker)
             else:
                 other.append(result.ticker)
 
         lines = []
 
-        # Summary header
-        total = len(self.results)
-        lines.append(f"<b>Screened {total} stock{'s' if total > 1 else ''}</b>\n")
-
         # Halal stocks
-        if halal:
-            tickers_str = ", ".join(f"<code>{t}</code>" for t in halal)
-            lines.append(f"✅ <b>Halal ({len(halal)})</b>\n{tickers_str}")
+        if groups[ComplianceStatus.HALAL]:
+            tickers = groups[ComplianceStatus.HALAL]
+            lines.append(f"✅ <b>Halal</b>  ·  {', '.join(tickers)}")
 
         # Not Halal stocks
-        if not_halal:
-            tickers_str = ", ".join(f"<code>{t}</code>" for t in not_halal)
-            lines.append(f"❌ <b>Not Halal ({len(not_halal)})</b>\n{tickers_str}")
+        if groups[ComplianceStatus.NOT_HALAL]:
+            tickers = groups[ComplianceStatus.NOT_HALAL]
+            lines.append(f"❌ <b>Not Halal</b>  ·  {', '.join(tickers)}")
 
         # Doubtful stocks
-        if doubtful:
-            tickers_str = ", ".join(f"<code>{t}</code>" for t in doubtful)
-            lines.append(f"⚠️ <b>Doubtful ({len(doubtful)})</b>\n{tickers_str}")
+        if groups[ComplianceStatus.DOUBTFUL]:
+            tickers = groups[ComplianceStatus.DOUBTFUL]
+            lines.append(f"⚠️ <b>Doubtful</b>  ·  {', '.join(tickers)}")
 
         # Other (not covered, errors)
         if other:
-            tickers_str = ", ".join(f"<code>{t}</code>" for t in other)
-            lines.append(f"❓ <b>Not Covered ({len(other)})</b>\n{tickers_str}")
+            lines.append(f"❓ <b>Not Covered</b>  ·  {', '.join(other)}")
 
-        return "\n\n".join(lines)
+        return "\n".join(lines)
 
 
 class StockScreener:
     """Main screener class that orchestrates all components."""
 
     def __init__(self):
-        self.scraper = MusaffaScraper()
+        self.musaffa_scraper = MusaffaScraper()
+        self.zoya_scraper = ZoyaScraper()
         self.image_parser: Optional[ImageParser] = None
         self._init_image_parser()
 
@@ -97,14 +134,14 @@ class StockScreener:
         tickers: list[str],
         user_id: Optional[int] = None
     ) -> ScreenResponse:
-        """Screen a list of tickers.
+        """Screen a list of tickers using both Musaffa and Zoya sources.
 
         Args:
             tickers: List of ticker symbols to screen
             user_id: Optional user ID for history tracking
 
         Returns:
-            ScreenResponse with results
+            ScreenResponse with resolved results
         """
         if not tickers:
             return ScreenResponse(results=[], from_cache=[], error="No tickers provided")
@@ -115,61 +152,114 @@ class StockScreener:
 
         results = []
         from_cache = []
+        conflicts = []
 
-        # Check cache first
-        uncached_tickers = []
+        # Check cache for both sources
+        tickers_to_fetch_musaffa = []
+        tickers_to_fetch_zoya = []
+        cached_musaffa = {}
+        cached_zoya = {}
+
         for ticker in tickers:
-            cached = TickerCache.get(ticker)
-            if cached:
-                logger.info(f"Cache hit for {ticker}")
-                results.append(ScreeningResult(
+            musaffa_cached = TickerCache.get(ticker, "musaffa")
+            zoya_cached = TickerCache.get(ticker, "zoya")
+
+            if musaffa_cached:
+                logger.info(f"Cache hit for {ticker} (musaffa)")
+                cached_musaffa[ticker] = ScreeningResult(
                     ticker=ticker,
-                    status=ComplianceStatus(cached["status"]),
-                    compliance_ranking=cached.get("compliance_ranking"),
-                    details=cached.get("details")
-                ))
-                from_cache.append(True)
+                    status=ComplianceStatus(musaffa_cached["status"]),
+                    source="musaffa",
+                    compliance_ranking=musaffa_cached.get("compliance_ranking"),
+                    details=musaffa_cached.get("details")
+                )
             else:
-                uncached_tickers.append(ticker)
+                tickers_to_fetch_musaffa.append(ticker)
 
-        # Fetch uncached tickers
-        if uncached_tickers:
-            logger.info(f"Fetching {len(uncached_tickers)} uncached tickers")
-            fresh_results = await self.scraper.screen_multiple(uncached_tickers)
+            if zoya_cached:
+                logger.info(f"Cache hit for {ticker} (zoya)")
+                cached_zoya[ticker] = ScreeningResult(
+                    ticker=ticker,
+                    status=ComplianceStatus(zoya_cached["status"]),
+                    source="zoya",
+                    details=zoya_cached.get("details")
+                )
+            else:
+                tickers_to_fetch_zoya.append(ticker)
 
-            for result in fresh_results:
-                results.append(result)
-                from_cache.append(False)
+        # Fetch from both sources in parallel
+        musaffa_results = {}
+        zoya_results = {}
 
-                # Cache successful results
-                if result.status != ComplianceStatus.ERROR:
-                    TickerCache.set(
-                        ticker=result.ticker,
-                        status=result.status.value,
-                        compliance_ranking=result.compliance_ranking,
-                        details=result.details
-                    )
+        async def fetch_musaffa():
+            if tickers_to_fetch_musaffa:
+                logger.info(f"Fetching {len(tickers_to_fetch_musaffa)} tickers from Musaffa")
+                fresh = await self.musaffa_scraper.screen_multiple(tickers_to_fetch_musaffa)
+                for result in fresh:
+                    musaffa_results[result.ticker] = result
+                    # Cache successful results
+                    if result.status != ComplianceStatus.ERROR:
+                        TickerCache.set(
+                            ticker=result.ticker,
+                            status=result.status.value,
+                            source="musaffa",
+                            compliance_ranking=result.compliance_ranking,
+                            details=result.details
+                        )
 
-        # Record history for user
-        if user_id:
-            for result in results:
+        async def fetch_zoya():
+            if tickers_to_fetch_zoya:
+                logger.info(f"Fetching {len(tickers_to_fetch_zoya)} tickers from Zoya")
+                fresh = await self.zoya_scraper.screen_multiple(tickers_to_fetch_zoya)
+                for result in fresh:
+                    zoya_results[result.ticker] = result
+                    # Cache successful results
+                    if result.status != ComplianceStatus.ERROR:
+                        TickerCache.set(
+                            ticker=result.ticker,
+                            status=result.status.value,
+                            source="zoya",
+                            details=result.details
+                        )
+
+        # Run both fetches in parallel
+        await asyncio.gather(fetch_musaffa(), fetch_zoya())
+
+        # Merge cached and fresh results
+        all_musaffa = {**cached_musaffa, **musaffa_results}
+        all_zoya = {**cached_zoya, **zoya_results}
+
+        # Resolve conflicts and build final results
+        for ticker in tickers:
+            musaffa_result = all_musaffa.get(ticker)
+            zoya_result = all_zoya.get(ticker)
+
+            # Determine if result came from cache
+            is_cached = ticker in cached_musaffa and ticker in cached_zoya
+
+            # Resolve compliance using both sources
+            final_result, is_conflict = resolve_compliance(musaffa_result, zoya_result)
+            results.append(final_result)
+            from_cache.append(is_cached)
+
+            if is_conflict:
+                conflicts.append(ticker)
+
+            # Record history for user
+            if user_id:
                 CheckHistory.record(
                     user_id=user_id,
-                    ticker=result.ticker,
-                    status=result.status.value
+                    ticker=ticker,
+                    final_status=final_result.status.value,
+                    musaffa_status=musaffa_result.status.value if musaffa_result else None,
+                    zoya_status=zoya_result.status.value if zoya_result else None,
+                    is_conflict=is_conflict
                 )
 
-        # Reorder results to match original ticker order
-        result_map = {r.ticker: (r, c) for r, c in zip(results, from_cache)}
-        ordered_results = []
-        ordered_cache = []
-        for ticker in tickers:
-            if ticker in result_map:
-                r, c = result_map[ticker]
-                ordered_results.append(r)
-                ordered_cache.append(c)
+        if conflicts:
+            logger.warning(f"Conflicts detected for tickers: {', '.join(conflicts)}")
 
-        return ScreenResponse(results=ordered_results, from_cache=ordered_cache)
+        return ScreenResponse(results=results, from_cache=from_cache)
 
     async def screen_text(
         self,

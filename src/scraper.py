@@ -31,6 +31,7 @@ class ScreeningResult:
     """Result of a stock screening."""
     ticker: str
     status: ComplianceStatus
+    source: str = "musaffa"
     compliance_ranking: Optional[str] = None
     company_name: Optional[str] = None
     details: Optional[str] = None
@@ -40,6 +41,7 @@ class ScreeningResult:
         return {
             "ticker": self.ticker,
             "status": self.status.value,
+            "source": self.source,
             "compliance_ranking": self.compliance_ranking,
             "company_name": self.company_name,
             "details": self.details,
