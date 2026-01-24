@@ -31,6 +31,9 @@ RUN playwright install chromium
 
 COPY . .
 
+RUN chmod +x start.sh
+
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "src/bot.py"]
+ENTRYPOINT ["/bin/bash"]
+CMD ["start.sh"]
