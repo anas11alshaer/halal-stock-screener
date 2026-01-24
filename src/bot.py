@@ -3,7 +3,10 @@
 print("Bot module loading...")
 
 import logging
+import os
 import sys
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
 
 print("Standard imports OK")
@@ -50,6 +53,26 @@ logging.basicConfig(
     handlers=log_handlers
 )
 logger = logging.getLogger(__name__)
+
+# Health check server for Railway
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass  # Suppress health check logs
+
+
+def start_health_server():
+    """Start health check HTTP server in background thread."""
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"Health check server running on port {port}")
+    server.serve_forever()
+
 
 # Global screener instance
 print("Initializing StockScreener...")
@@ -215,6 +238,10 @@ def main():
     print("=" * 50)
     print("HALAL STOCK SCREENER BOT STARTING")
     print("=" * 50)
+
+    # Start health check server for Railway
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
 
     if not TELEGRAM_BOT_TOKEN:
         print("ERROR: TELEGRAM_BOT_TOKEN is not set!")
