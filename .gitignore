@@ -48,5 +48,8 @@ old/
 tmp/
 temp/
 
-# Claude Code
-CLAUDE.md
+# Claude Code local files (agents, settings)
+.claude/
+
+# Generated reports
+TEST_REVIEW_REPORT.md

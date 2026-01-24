@@ -8,7 +8,7 @@ from typing import Optional
 from scrapers import MusaffaScraper, ZoyaScraper, ScreeningResult, ComplianceStatus
 from resolver import resolve_compliance
 from image_parser import ImageParser, parse_text_for_tickers, QuotaExceededError
-from database import TickerCache, CheckHistory, init_database
+from database import TickerCache, CheckHistory, ImageCache, init_database
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ class StockScreener:
     def _init_image_parser(self):
         """Initialize image parser if API key is available."""
         try:
-            self.image_parser = ImageParser()
+            self.image_parser = ImageParser(image_cache=ImageCache)
         except ValueError as e:
             logger.warning(f"Image parser not available: {e}")
             self.image_parser = None
@@ -341,3 +341,4 @@ class StockScreener:
     def clear_expired_cache(self):
         """Clear expired cache entries."""
         TickerCache.clear_expired()
+        ImageCache.clear_expired()

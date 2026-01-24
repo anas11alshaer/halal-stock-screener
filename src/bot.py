@@ -210,8 +210,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status_msg = await update.message.reply_text("Analyzing image...")
 
-    # Get the largest photo
-    photo = update.message.photo[-1]
+    # Get medium-sized photo (faster processing, sufficient for text extraction)
+    # Telegram provides photos in ascending size order
+    photos = update.message.photo
+    # Use middle resolution or second-largest for balance of quality and speed
+    photo_index = min(len(photos) - 1, max(1, len(photos) // 2))
+    photo = photos[photo_index]
     file = await context.bot.get_file(photo.file_id)
 
     # Download photo to memory

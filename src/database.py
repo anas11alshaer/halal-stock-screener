@@ -124,6 +124,15 @@ def init_database():
             )
         """)
 
+        # Image cache table for extracted tickers (24-hour TTL)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS image_cache (
+                image_hash TEXT PRIMARY KEY,
+                tickers TEXT NOT NULL,
+                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # History table for user checks (with multi-source support)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS checks (
@@ -327,3 +336,60 @@ class CheckHistory:
                 "status_breakdown": status_counts,
                 "conflict_count": conflict_count
             }
+
+
+class ImageCache:
+    """Cache layer for image-to-tickers extraction results."""
+
+    @staticmethod
+    def get(image_hash: str) -> Optional[list[str]]:
+        """Get cached tickers for an image hash if not expired."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT tickers, cached_at FROM image_cache WHERE image_hash = ?",
+                (image_hash,)
+            )
+            row = cursor.fetchone()
+
+            if row is None:
+                return None
+
+            # Check if cache has expired (same TTL as ticker cache)
+            cached_at = datetime.fromisoformat(row["cached_at"])
+            if datetime.now() - cached_at > timedelta(hours=CACHE_TTL_HOURS):
+                cursor.execute("DELETE FROM image_cache WHERE image_hash = ?", (image_hash,))
+                return None
+
+            # Parse JSON list of tickers
+            import json
+            try:
+                return json.loads(row["tickers"])
+            except json.JSONDecodeError:
+                return None
+
+    @staticmethod
+    def set(image_hash: str, tickers: list[str]):
+        """Cache extracted tickers for an image hash."""
+        import json
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO image_cache (image_hash, tickers, cached_at)
+                VALUES (?, ?, ?)
+            """, (image_hash, json.dumps(tickers), datetime.now().isoformat()))
+            logger.debug(f"Cached {len(tickers)} tickers for image hash {image_hash[:8]}...")
+
+    @staticmethod
+    def clear_expired():
+        """Remove all expired image cache entries."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            expiry_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS)).isoformat()
+            cursor.execute(
+                "DELETE FROM image_cache WHERE cached_at < ?",
+                (expiry_time,)
+            )
+            deleted = cursor.rowcount
+            if deleted > 0:
+                logger.info(f"Cleared {deleted} expired image cache entries")

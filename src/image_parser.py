@@ -1,6 +1,7 @@
 """Gemini-based image parser for extracting stock tickers."""
 
-import base64
+import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -15,7 +16,34 @@ from config import GEMINI_API_KEY
 logger = logging.getLogger(__name__)
 
 # Rate limiting: minimum seconds between API calls
-MIN_REQUEST_INTERVAL = 2.0
+MIN_REQUEST_INTERVAL = 1.0
+
+# Retry configuration
+MAX_RETRIES = 3
+INITIAL_BACKOFF = 1.0  # seconds
+
+# Common false positives that look like tickers but aren't
+FALSE_POSITIVE_TICKERS = {
+    "CEO", "CFO", "CTO", "COO", "IPO", "ETF", "USD", "EUR", "GBP",
+    "NYSE", "NASDAQ", "OTC", "SEC", "FDA", "USA", "API", "PDF",
+    "THE", "AND", "FOR", "ARE", "NOT", "YOU", "ALL", "CAN", "HAD",
+    "HER", "WAS", "ONE", "OUR", "OUT", "HAS", "HIS", "HOW", "MAN",
+    "NEW", "NOW", "OLD", "SEE", "WAY", "WHO", "BOY", "DID", "GET",
+    "LET", "PUT", "SAY", "SHE", "TOO", "USE", "INC", "LLC", "LTD",
+    "PLC", "EST", "YTD", "QTR", "AVG", "MAX", "MIN", "TOP", "BUY",
+    "SELL", "HOLD", "CALL", "LONG", "SHORT", "CASH", "DEBT",
+}
+
+
+def is_valid_ticker(ticker: str) -> bool:
+    """Check if a string looks like a valid stock ticker."""
+    if not ticker:
+        return False
+
+    if not re.match(r"^[A-Z]{1,5}(\.[A-Z])?$", ticker):
+        return False
+
+    return ticker not in FALSE_POSITIVE_TICKERS
 
 
 class QuotaExceededError(Exception):
@@ -26,20 +54,28 @@ class QuotaExceededError(Exception):
 class ImageParser:
     """Parse images to extract stock tickers using Gemini."""
 
-    def __init__(self):
+    def __init__(self, image_cache=None):
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is not set in environment variables")
 
         self.client = genai.Client(api_key=GEMINI_API_KEY)
-        self.model_name = "gemini-2.5-flash"
+        self.model_name = "gemini-2.0-flash-lite"  # Faster, lighter model
         self._last_request_time: float = 0
+        self._rate_limit_lock = asyncio.Lock()
+        self.image_cache = image_cache  # Optional ImageCache instance
 
-    def _rate_limit(self):
-        """Enforce rate limiting between API calls."""
-        elapsed = time.time() - self._last_request_time
-        if elapsed < MIN_REQUEST_INTERVAL:
-            time.sleep(MIN_REQUEST_INTERVAL - elapsed)
-        self._last_request_time = time.time()
+    async def _rate_limit(self):
+        """Enforce rate limiting between API calls (async-safe)."""
+        async with self._rate_limit_lock:
+            elapsed = time.time() - self._last_request_time
+            if elapsed < MIN_REQUEST_INTERVAL:
+                await asyncio.sleep(MIN_REQUEST_INTERVAL - elapsed)
+            self._last_request_time = time.time()
+
+    @staticmethod
+    def compute_image_hash(image_data: bytes) -> str:
+        """Compute a hash of the image for caching purposes."""
+        return hashlib.sha256(image_data).hexdigest()[:32]
 
     async def extract_tickers(self, image_data: bytes) -> list[str]:
         """Extract stock tickers from an image.
@@ -51,8 +87,16 @@ class ImageParser:
             List of extracted ticker symbols
 
         Raises:
-            QuotaExceededError: If API quota is exceeded
+            QuotaExceededError: If API quota is exceeded after all retries
         """
+        # Check cache first
+        image_hash = self.compute_image_hash(image_data)
+        if self.image_cache:
+            cached = self.image_cache.get(image_hash)
+            if cached is not None:
+                logger.info(f"Image cache hit for hash {image_hash[:8]}...")
+                return cached
+
         prompt = """Analyze this image and extract any stock ticker symbols you can find.
 
 Stock tickers are typically:
@@ -76,33 +120,57 @@ If no tickers are found, return:
 Only include actual stock ticker symbols, not random text or abbreviations.
 Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AAPL.US")."""
 
-        # Apply rate limiting
-        self._rate_limit()
+        # Retry loop with exponential backoff
+        last_exception = None
+        for attempt in range(MAX_RETRIES):
+            # Apply rate limiting
+            await self._rate_limit()
 
-        try:
-            image_part = types.Part.from_bytes(
-                data=image_data,
-                mime_type="image/jpeg"
-            )
+            try:
+                image_part = types.Part.from_bytes(
+                    data=image_data,
+                    mime_type="image/jpeg"
+                )
 
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name,
-                contents=[prompt, image_part],
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=1024,
-                ),
-            )
+                response = await self.client.aio.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, image_part],
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=256,  # Reduced - we only need ticker list
+                    ),
+                )
 
-            return self._parse_response(response.text)
+                tickers = self._parse_response(response.text)
 
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "quota" in error_str.lower():
-                logger.warning("Gemini API quota exceeded")
-                raise QuotaExceededError("API quota exceeded. Please try again later.")
-            logger.error(f"Error extracting tickers from image: {e}")
-            return []
+                # Cache successful result
+                if self.image_cache:
+                    self.image_cache.set(image_hash, tickers)
+
+                return tickers
+
+            except Exception as e:
+                error_str = str(e)
+                is_rate_limit = "429" in error_str or "quota" in error_str.lower()
+
+                if is_rate_limit:
+                    last_exception = e
+                    if attempt < MAX_RETRIES - 1:
+                        backoff = INITIAL_BACKOFF * (2 ** attempt)
+                        logger.warning(f"Rate limited, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        logger.warning("Gemini API quota exceeded after all retries")
+                        raise QuotaExceededError("API quota exceeded. Please try again later.")
+
+                logger.error(f"Error extracting tickers from image: {e}")
+                return []
+
+        # Should not reach here, but just in case
+        if last_exception:
+            raise QuotaExceededError("API quota exceeded. Please try again later.")
+        return []
 
     def _parse_response(self, response_text: str) -> list[str]:
         """Parse the Gemini response to extract tickers."""
@@ -155,25 +223,7 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
 
     def _is_valid_ticker(self, ticker: str) -> bool:
         """Check if a string looks like a valid stock ticker."""
-        if not ticker:
-            return False
-
-        if not re.match(r"^[A-Z]{1,5}(\.[A-Z])?$", ticker):
-            return False
-
-        # Filter out common false positives
-        false_positives = {
-            "CEO", "CFO", "CTO", "COO", "IPO", "ETF", "USD", "EUR", "GBP",
-            "NYSE", "NASDAQ", "OTC", "SEC", "FDA", "USA", "API", "PDF",
-            "THE", "AND", "FOR", "ARE", "NOT", "YOU", "ALL", "CAN", "HAD",
-            "HER", "WAS", "ONE", "OUR", "OUT", "HAS", "HIS", "HOW", "MAN",
-            "NEW", "NOW", "OLD", "SEE", "WAY", "WHO", "BOY", "DID", "GET",
-            "LET", "PUT", "SAY", "SHE", "TOO", "USE", "INC", "LLC", "LTD",
-            "PLC", "EST", "YTD", "QTR", "AVG", "MAX", "MIN", "TOP", "BUY",
-            "SELL", "HOLD", "CALL", "LONG", "SHORT", "CASH", "DEBT",
-        }
-
-        return ticker not in false_positives
+        return is_valid_ticker(ticker)
 
     def _extract_tickers_regex(self, text: str) -> list[str]:
         """Fallback method to extract tickers using regex."""
@@ -216,11 +266,10 @@ def parse_text_for_tickers(text: str) -> list[str]:
             tickers.append(cleaned)
 
     # Validate and deduplicate
-    parser = ImageParser.__new__(ImageParser)
     valid_tickers = []
     seen = set()
     for ticker in tickers:
-        if ticker not in seen and parser._is_valid_ticker(ticker):
+        if ticker not in seen and is_valid_ticker(ticker):
             seen.add(ticker)
             valid_tickers.append(ticker)
 
