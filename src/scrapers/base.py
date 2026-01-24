@@ -8,6 +8,7 @@ from typing import Optional
 
 class ComplianceStatus(Enum):
     """Stock compliance status."""
+
     HALAL = "HALAL"
     NOT_HALAL = "NOT_HALAL"
     DOUBTFUL = "DOUBTFUL"
@@ -18,6 +19,7 @@ class ComplianceStatus(Enum):
 @dataclass
 class ScreeningResult:
     """Result of a stock screening."""
+
     ticker: str
     status: ComplianceStatus
     source: str = "unknown"
@@ -52,4 +54,4 @@ def get_chromium_path() -> str | None:
 
 
 # Scraper constants
-MAX_CONCURRENT_PAGES = 5
+MAX_CONCURRENT_PAGES = 2
