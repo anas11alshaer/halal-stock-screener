@@ -2,7 +2,7 @@
 builder = "nixpacks"
 
 [build.nixpacksPlan.phases.setup]
-nixPkgs = ["chromium", "chromium-chromedriver"]
+nixPkgs = ["chromium"]
 
 [deploy]
 restartPolicyType = "always"
