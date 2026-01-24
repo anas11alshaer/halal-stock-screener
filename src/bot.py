@@ -1,20 +1,40 @@
 """Telegram bot entry point for Stock Screener."""
 
+print("Bot module loading...")
+
 import logging
 import sys
 from io import BytesIO
 
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+print("Standard imports OK")
 
-from config import TELEGRAM_BOT_TOKEN, LOG_FILE, LOG_LEVEL
-from screener import StockScreener
+try:
+    from telegram import Update
+    from telegram.ext import (
+        Application,
+        CommandHandler,
+        MessageHandler,
+        ContextTypes,
+        filters
+    )
+    print("Telegram imports OK")
+except Exception as e:
+    print(f"Telegram import error: {e}")
+    raise
+
+try:
+    from config import TELEGRAM_BOT_TOKEN, LOG_FILE, LOG_LEVEL
+    print("Config import OK")
+except Exception as e:
+    print(f"Config import error: {e}")
+    raise
+
+try:
+    from screener import StockScreener
+    print("Screener import OK")
+except Exception as e:
+    print(f"Screener import error: {e}")
+    raise
 
 # Configure logging - only use file handler if directory exists
 log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -32,7 +52,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global screener instance
-screener = StockScreener()
+print("Initializing StockScreener...")
+try:
+    screener = StockScreener()
+    print("StockScreener initialized OK")
+except Exception as e:
+    print(f"StockScreener init error: {e}")
+    raise
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
