@@ -72,10 +72,12 @@ Defined in `scrapers/base.py` as `ComplianceStatus`: HALAL, NOT_HALAL, DOUBTFUL,
 
 ### Image Parser Features
 
-- Uses `gemini-2.0-flash-lite` model for fast responses
+- Uses `gemini-2.5-flash-lite` model for fast responses
+- **Multi-key support**: Rotate through multiple API keys for higher quota
 - SHA-256 image hashing with 24-hour cache (avoids duplicate API calls)
 - Async rate limiting with `asyncio.Lock`
 - Retry logic with exponential backoff (3 retries: 1s, 2s, 4s)
+- Per-key cooldown (5 minutes) after quota errors
 - Downloads medium-resolution photos for faster processing
 
 ## Configuration
@@ -83,7 +85,8 @@ Defined in `scrapers/base.py` as `ComplianceStatus`: HALAL, NOT_HALAL, DOUBTFUL,
 Environment variables loaded from `.env` via python-dotenv:
 
 - `TELEGRAM_BOT_TOKEN` (required): Bot token from BotFather
-- `GEMINI_API_KEY` (optional): For image analysis feature
+- `GEMINI_API_KEY` (optional): Single API key for image analysis
+- `GEMINI_API_KEYS` (optional): Comma-separated list of API keys for higher quota
 - `CACHE_TTL_HOURS`: Cache expiration (default: 24)
 - `LOG_LEVEL`: Logging verbosity (default: INFO)
 

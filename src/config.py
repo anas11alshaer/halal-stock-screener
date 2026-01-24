@@ -22,7 +22,16 @@ LOGS_DIR.mkdir(exist_ok=True)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 # Gemini API configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# Supports multiple keys: comma-separated in GEMINI_API_KEYS or single GEMINI_API_KEY
+_gemini_keys_str = os.getenv("GEMINI_API_KEYS", "")
+GEMINI_API_KEYS = [k.strip() for k in _gemini_keys_str.split(",") if k.strip()]
+# Fallback to single key for backwards compatibility
+if not GEMINI_API_KEYS:
+    _single_key = os.getenv("GEMINI_API_KEY", "")
+    if _single_key:
+        GEMINI_API_KEYS = [_single_key]
+# Legacy single key variable (first key or empty)
+GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
 # Cache configuration
 CACHE_TTL_HOURS = int(os.getenv("CACHE_TTL_HOURS", "24"))

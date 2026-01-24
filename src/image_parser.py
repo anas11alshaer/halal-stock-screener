@@ -11,7 +11,7 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEY
+from config import GEMINI_API_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,8 @@ MIN_REQUEST_INTERVAL = 1.0
 MAX_RETRIES = 3
 INITIAL_BACKOFF = 1.0  # seconds
 
-# Quota cooldown: pause API calls after quota error (5 minutes)
+# Quota cooldown per key (5 minutes)
 QUOTA_COOLDOWN_SECONDS = 300
-_quota_cooldown_until: float = 0  # Global cooldown timestamp
 
 # Common false positives that look like tickers but aren't
 FALSE_POSITIVE_TICKERS = {
@@ -118,17 +117,52 @@ class QuotaExceededError(Exception):
 
 
 class ImageParser:
-    """Parse images to extract stock tickers using Gemini."""
+    """Parse images to extract stock tickers using Gemini with multi-key support."""
 
     def __init__(self, image_cache=None):
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is not set in environment variables")
+        if not GEMINI_API_KEYS:
+            raise ValueError("No Gemini API keys configured. Set GEMINI_API_KEYS or GEMINI_API_KEY.")
 
-        self.client = genai.Client(api_key=GEMINI_API_KEY)
+        # Create a client pool with one client per API key
+        self.clients = [genai.Client(api_key=key) for key in GEMINI_API_KEYS]
+        self.key_count = len(self.clients)
+        self._current_key_index = 0
+        self._key_cooldowns: dict[int, float] = {}  # key_index -> cooldown_until timestamp
+
         self.model_name = "gemini-2.5-flash-lite"  # Faster, lighter model
         self._last_request_time: float = 0
         self._rate_limit_lock = asyncio.Lock()
         self.image_cache = image_cache  # Optional ImageCache instance
+
+        logger.info(f"ImageParser initialized with {self.key_count} API key(s)")
+
+    def _get_available_client(self) -> tuple[int, genai.Client] | None:
+        """Get the next available client that's not in cooldown.
+
+        Returns:
+            Tuple of (key_index, client) or None if all keys are in cooldown
+        """
+        now = time.time()
+        checked = 0
+
+        while checked < self.key_count:
+            idx = self._current_key_index
+            self._current_key_index = (self._current_key_index + 1) % self.key_count
+
+            # Check if this key is in cooldown
+            cooldown_until = self._key_cooldowns.get(idx, 0)
+            if now >= cooldown_until:
+                return (idx, self.clients[idx])
+
+            checked += 1
+
+        # All keys are in cooldown
+        return None
+
+    def _set_key_cooldown(self, key_index: int):
+        """Set a cooldown for a specific key after quota error."""
+        self._key_cooldowns[key_index] = time.time() + QUOTA_COOLDOWN_SECONDS
+        logger.warning(f"API key {key_index + 1}/{self.key_count} in cooldown for {QUOTA_COOLDOWN_SECONDS}s")
 
     async def _rate_limit(self):
         """Enforce rate limiting between API calls (async-safe)."""
@@ -144,7 +178,7 @@ class ImageParser:
         return hashlib.sha256(image_data).hexdigest()[:32]
 
     async def extract_tickers(self, image_data: bytes) -> list[str]:
-        """Extract stock tickers from an image.
+        """Extract stock tickers from an image using rotating API keys.
 
         Args:
             image_data: Raw image bytes
@@ -153,18 +187,8 @@ class ImageParser:
             List of extracted ticker symbols
 
         Raises:
-            QuotaExceededError: If API quota is exceeded after all retries
+            QuotaExceededError: If all API keys are exhausted
         """
-        global _quota_cooldown_until
-
-        # Check if we're in cooldown period after quota error
-        if time.time() < _quota_cooldown_until:
-            remaining = int(_quota_cooldown_until - time.time())
-            logger.warning(f"Quota cooldown active, {remaining}s remaining")
-            raise QuotaExceededError(
-                f"Daily quota exceeded. Please wait {remaining // 60} minutes or try again later."
-            )
-
         # Check cache first
         image_hash = self.compute_image_hash(image_data)
         if self.image_cache:
@@ -196,75 +220,86 @@ If no tickers are found, return:
 Only include actual stock ticker symbols, not random text or abbreviations.
 Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AAPL.US")."""
 
-        # Retry loop with exponential backoff
+        # Try each available key with retries
+        keys_tried = 0
         last_exception = None
-        for attempt in range(MAX_RETRIES):
-            # Apply rate limiting
-            await self._rate_limit()
 
-            try:
-                image_part = types.Part.from_bytes(
-                    data=image_data, mime_type="image/jpeg"
+        while keys_tried < self.key_count:
+            # Get next available client
+            client_info = self._get_available_client()
+            if client_info is None:
+                # All keys in cooldown - find shortest wait time
+                min_cooldown = min(self._key_cooldowns.values())
+                remaining = int(min_cooldown - time.time())
+                logger.warning(f"All {self.key_count} API keys in cooldown")
+                raise QuotaExceededError(
+                    f"All API keys exhausted. Please wait {max(1, remaining // 60)} minutes."
                 )
 
-                response = await self.client.aio.models.generate_content(
-                    model=self.model_name,
-                    contents=[prompt, image_part],
-                    config=types.GenerateContentConfig(
-                        temperature=0.1,
-                        max_output_tokens=256,  # Reduced - we only need ticker list
-                    ),
-                )
+            key_index, client = client_info
+            logger.info(f"Using API key {key_index + 1}/{self.key_count}")
 
-                tickers = self._parse_response(response.text)
+            # Retry loop for this key
+            for attempt in range(MAX_RETRIES):
+                await self._rate_limit()
 
-                # Cache successful result
-                if self.image_cache:
-                    self.image_cache.set(image_hash, tickers)
-
-                return tickers
-
-            except Exception as e:
-                error_str = str(e).lower()
-                logger.error(f"Gemini API error (attempt {attempt + 1}): {e}")
-
-                # Check for various quota/rate limit indicators
-                is_quota_error = any(x in error_str for x in [
-                    "429", "quota", "rate limit", "resource exhausted",
-                    "too many requests", "limit exceeded"
-                ])
-
-                if is_quota_error:
-                    last_exception = e
-                    # Check if it's a daily quota (not just rate limit)
-                    is_daily_quota = "daily" in error_str or "per day" in error_str
-
-                    if is_daily_quota or attempt >= MAX_RETRIES - 1:
-                        # Set cooldown to prevent hammering the API
-                        _quota_cooldown_until = time.time() + QUOTA_COOLDOWN_SECONDS
-                        logger.warning(
-                            f"Quota exceeded, cooldown set for {QUOTA_COOLDOWN_SECONDS}s"
-                        )
-                        raise QuotaExceededError(
-                            "API quota exceeded. Please wait a few minutes or try again later."
-                        )
-
-                    # Retry with backoff for rate limits
-                    backoff = INITIAL_BACKOFF * (2 ** attempt)
-                    logger.warning(
-                        f"Rate limited, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})"
+                try:
+                    image_part = types.Part.from_bytes(
+                        data=image_data, mime_type="image/jpeg"
                     )
-                    await asyncio.sleep(backoff)
-                    continue
 
-                # Non-quota error - don't retry
-                logger.error(f"Error extracting tickers from image: {e}")
-                return []
+                    response = await client.aio.models.generate_content(
+                        model=self.model_name,
+                        contents=[prompt, image_part],
+                        config=types.GenerateContentConfig(
+                            temperature=0.1,
+                            max_output_tokens=256,
+                        ),
+                    )
 
-        # Should not reach here, but just in case
+                    tickers = self._parse_response(response.text)
+
+                    # Cache successful result
+                    if self.image_cache:
+                        self.image_cache.set(image_hash, tickers)
+
+                    return tickers
+
+                except Exception as e:
+                    error_str = str(e).lower()
+                    logger.error(f"Gemini API error (key {key_index + 1}, attempt {attempt + 1}): {e}")
+
+                    is_quota_error = any(x in error_str for x in [
+                        "429", "quota", "rate limit", "resource exhausted",
+                        "too many requests", "limit exceeded"
+                    ])
+
+                    if is_quota_error:
+                        last_exception = e
+                        is_daily_quota = "daily" in error_str or "per day" in error_str
+
+                        if is_daily_quota or attempt >= MAX_RETRIES - 1:
+                            # This key is exhausted, put it in cooldown and try next key
+                            self._set_key_cooldown(key_index)
+                            break  # Break inner retry loop, try next key
+
+                        # Retry with backoff
+                        backoff = INITIAL_BACKOFF * (2 ** attempt)
+                        logger.warning(f"Rate limited, retrying in {backoff}s")
+                        await asyncio.sleep(backoff)
+                        continue
+
+                    # Non-quota error - don't retry
+                    logger.error(f"Error extracting tickers: {e}")
+                    return []
+
+            keys_tried += 1
+
+        # All keys exhausted
         if last_exception:
-            _quota_cooldown_until = time.time() + QUOTA_COOLDOWN_SECONDS
-            raise QuotaExceededError("API quota exceeded. Please try again later.")
+            raise QuotaExceededError(
+                f"All {self.key_count} API keys exhausted. Please try again later."
+            )
         return []
 
     def _parse_response(self, response_text: str) -> list[str]:
