@@ -16,14 +16,18 @@ from telegram.ext import (
 from config import TELEGRAM_BOT_TOKEN, LOG_FILE, LOG_LEVEL
 from screener import StockScreener
 
-# Configure logging
+# Configure logging - only use file handler if directory exists
+log_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    log_handlers.append(logging.FileHandler(LOG_FILE))
+except Exception:
+    pass  # Skip file logging if it fails
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger(__name__)
 
@@ -182,10 +186,16 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot."""
+    print("=" * 50)
+    print("HALAL STOCK SCREENER BOT STARTING")
+    print("=" * 50)
+
     if not TELEGRAM_BOT_TOKEN:
+        print("ERROR: TELEGRAM_BOT_TOKEN is not set!")
         logger.error("TELEGRAM_BOT_TOKEN is not set!")
         sys.exit(1)
 
+    print(f"Token configured: {TELEGRAM_BOT_TOKEN[:10]}...")
     logger.info("Starting Stock Screener Bot...")
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
