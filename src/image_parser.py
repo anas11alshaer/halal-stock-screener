@@ -257,7 +257,15 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                         ),
                     )
 
-                    tickers = self._parse_response(response.text)
+                    # Log response for debugging
+                    response_text = response.text if response.text else ""
+                    logger.info(f"Gemini response ({len(response_text)} chars): {response_text[:200]}...")
+
+                    if not response_text:
+                        logger.warning("Gemini returned empty response")
+                        return []
+
+                    tickers = self._parse_response(response_text)
 
                     # Cache successful result
                     if self.image_cache:
@@ -304,6 +312,9 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
 
     def _parse_response(self, response_text: str) -> list[str]:
         """Parse the Gemini response to extract tickers."""
+        # Log raw response for debugging
+        logger.debug(f"Raw Gemini response: {response_text[:500]}")
+
         try:
             # Try to find JSON in markdown code blocks
             json_match = re.search(
@@ -311,16 +322,20 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
             )
             if json_match:
                 json_str = json_match.group(1)
+                logger.debug("Found JSON in code block")
             else:
                 # Try to find raw JSON
                 json_match = re.search(r'(\{.*"tickers".*\})', response_text, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(1)
+                    logger.debug("Found raw JSON")
                 else:
                     json_str = response_text.strip()
+                    logger.debug("Using full response as JSON")
 
             data = json.loads(json_str)
             tickers = data.get("tickers", [])
+            logger.info(f"Parsed tickers from JSON: {tickers}")
 
             # Validate and clean tickers
             valid_tickers = []
@@ -328,12 +343,15 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                 cleaned = self._clean_ticker(ticker)
                 if cleaned and self._is_valid_ticker(cleaned):
                     valid_tickers.append(cleaned)
+                elif cleaned:
+                    logger.debug(f"Ticker '{ticker}' -> '{cleaned}' filtered out by validation")
 
-            logger.info(f"Extracted {len(valid_tickers)} tickers from image")
+            logger.info(f"Extracted {len(valid_tickers)} valid tickers: {valid_tickers}")
             return valid_tickers
 
-        except json.JSONDecodeError:
-            logger.warning("Could not parse JSON from Gemini response")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Could not parse JSON: {e}")
+            logger.warning(f"Response was: {response_text[:200]}")
             return self._extract_tickers_regex(response_text)
 
     def _clean_ticker(self, ticker: str) -> Optional[str]:
