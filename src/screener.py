@@ -5,8 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from scraper import MusaffaScraper, ScreeningResult, ComplianceStatus
-from zoya_scraper import ZoyaScraper
+from scrapers import MusaffaScraper, ZoyaScraper, ScreeningResult, ComplianceStatus
 from resolver import resolve_compliance
 from image_parser import ImageParser, parse_text_for_tickers, QuotaExceededError
 from database import TickerCache, CheckHistory, init_database

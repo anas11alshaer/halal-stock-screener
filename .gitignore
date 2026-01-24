@@ -1,23 +1,52 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
 # Virtual environment
 venv/
+env/
+.venv/
 
-# Environment variables
-.env
-
-# Legacy files
-old/
-
-# Python cache
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
 
-# Database files
+# Database
 data/*.db
+*.db
 
-# Log files
+# Logs
 logs/*.log
+*.log
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Legacy/temp
+old/
+tmp/
+temp/
+
+# Claude Code
+CLAUDE.md

@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from scraper import ScreeningResult, ComplianceStatus
+from scrapers import ScreeningResult, ComplianceStatus
 
 logger = logging.getLogger(__name__)
 

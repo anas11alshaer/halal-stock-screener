@@ -1,124 +1,137 @@
-# Halal Stock Screener Telegram Bot
+# Halal Stock Screener
 
-A Telegram bot that checks whether stocks are Shariah-compliant (Halal) according to Islamic investment principles. The bot fetches compliance data from Musaffa.com and supports text-based ticker input as well as image analysis.
+A Telegram bot that checks whether stocks are Shariah-compliant (Halal) according to Islamic investment principles. The bot fetches compliance data from multiple sources (Musaffa and Zoya) and uses conservative conflict resolution.
 
 ## Features
 
-- **Stock Compliance Checking** - Verify if stocks are Halal, Not Halal, or Doubtful
-- **Multiple Input Methods** - Send ticker symbols as text or upload images containing tickers
-- **Image Analysis** - AI-powered extraction of ticker symbols from screenshots using Google Gemini
+- **Dual-Source Verification** - Cross-references Musaffa and Zoya for accurate compliance data
+- **Conservative Conflict Resolution** - When sources disagree, the more restrictive status is used
+- **Multiple Input Methods** - Send ticker symbols as text or upload images
+- **Image Analysis** - AI-powered extraction of tickers from screenshots using Google Gemini
 - **Batch Processing** - Check multiple tickers in a single message
-- **Caching** - 24-hour cache to improve response times and reduce API calls
+- **Smart Caching** - 24-hour cache per source to improve response times
 - **User History** - Track your screening history and view statistics
-- **Rich Responses** - Formatted messages with compliance status, company names, and rankings
 
-## Prerequisites
+## Quick Start
 
-- Python 3.8+
+### Prerequisites
+
+- Python 3.11+
 - Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
 - Google Gemini API Key (optional, for image analysis)
 
-## Installation
+### Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd "Stock Screener"
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/halal-stock-screener.git
+cd halal-stock-screener
 
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-3. **Install Playwright browsers**
-   ```bash
-   playwright install chromium
-   ```
+# Install dependencies
+pip install -r requirements.txt
+playwright install chromium
 
-4. **Configure environment variables**
+# Configure environment
+cp .env.example .env
+# Edit .env with your API keys
 
-   Create a `.env` file in the project root:
-   ```env
-   TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-   GEMINI_API_KEY=your_gemini_api_key_here
-   CACHE_TTL_HOURS=24
-   LOG_LEVEL=INFO
-   ```
+# Run the bot
+python src/bot.py
+```
 
 ## Configuration
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Yes | - | Bot token from Telegram BotFather |
+| `TELEGRAM_BOT_TOKEN` | Yes | - | Bot token from BotFather |
 | `GEMINI_API_KEY` | No | - | Google Gemini API key for image analysis |
 | `CACHE_TTL_HOURS` | No | 24 | Cache expiration time in hours |
-| `LOG_LEVEL` | No | INFO | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `LOG_LEVEL` | No | INFO | Logging level |
 
 ## Usage
 
-1. **Start the bot**
-   ```bash
-   python src/bot.py
-   ```
+### Bot Commands
 
-2. **Interact via Telegram**
+| Command | Description |
+|---------|-------------|
+| `/start` | Welcome message and instructions |
+| `/help` | Show usage help |
+| `/check AAPL` | Check a specific ticker |
+| `/history` | View your last 15 checks |
+| `/stats` | View your screening statistics |
 
-   | Command | Description |
-   |---------|-------------|
-   | `/start` | Display welcome message and instructions |
-   | `/help` | Show usage help |
-   | `/check AAPL` | Check a specific ticker |
-   | `/history` | View your last 15 checked stocks |
-   | `/stats` | View your screening statistics |
+### Direct Input
 
-   You can also:
-   - Send ticker symbols directly: `AAPL`, `$MSFT`, or `AAPL GOOGL TSLA`
-   - Upload images containing ticker symbols for automatic extraction
+- Single ticker: `AAPL`
+- With cashtag: `$MSFT`
+- Multiple tickers: `AAPL GOOGL TSLA`
+- Upload images containing ticker symbols
 
 ## Project Structure
 
 ```
-Stock Screener/
-├── src/                    # Source code
-│   ├── bot.py              # Telegram bot entry point and command handlers
-│   ├── screener.py         # Core screening orchestration logic
-│   ├── scraper.py          # Web scraper for Musaffa.com
-│   ├── image_parser.py     # Image analysis and ticker extraction
-│   ├── database.py         # SQLite database layer (caching & history)
-│   └── config.py           # Configuration management
-├── data/                   # Database files
-│   └── stock_screener.db   # SQLite database (auto-generated)
-├── logs/                   # Log files
-│   └── stock_screener.log  # Application logs (auto-generated)
-├── tests/                  # Test files
-│   └── test_scraper.py     # Scraper tests
-├── requirements.txt        # Python dependencies
-├── .env.example            # Example environment variables
-└── .env                    # Environment variables (create this)
+halal-stock-screener/
+├── src/
+│   ├── bot.py             # Telegram bot handlers
+│   ├── screener.py        # Orchestration logic
+│   ├── scraper.py         # Musaffa scraper
+│   ├── zoya_scraper.py    # Zoya scraper
+│   ├── resolver.py        # Conflict resolution
+│   ├── database.py        # SQLite caching & history
+│   ├── image_parser.py    # Gemini image analysis
+│   └── config.py          # Configuration
+├── tests/
+│   └── test_scraper.py
+├── data/                  # SQLite database (auto-created)
+├── logs/                  # Application logs (auto-created)
+├── requirements.txt
+├── Procfile              # Railway deployment
+├── railway.toml
+└── nixpacks.toml
 ```
 
-## Compliance Status Types
+## Compliance Status
 
 | Status | Description |
 |--------|-------------|
-| HALAL | Stock is Shariah-compliant |
-| NOT_HALAL | Stock does not meet Shariah compliance criteria |
-| DOUBTFUL | Stock has uncertain compliance status |
-| NOT_COVERED | Stock is not in the Musaffa database |
-| ERROR | Failed to retrieve compliance data |
+| **Halal** | Shariah-compliant according to both sources |
+| **Not Halal** | Does not meet Shariah criteria |
+| **Doubtful** | Uncertain compliance status |
+| **Not Covered** | Stock not in database |
 
-## Dependencies
+### Conflict Resolution
 
-- **python-telegram-bot** - Telegram bot framework
-- **google-generativeai** - Google Gemini API for image analysis
-- **playwright** - Browser automation for web scraping
-- **python-dotenv** - Environment variable management
+When Musaffa and Zoya disagree, the bot uses conservative resolution:
+
+```
+Priority: Not Halal > Doubtful > Halal > Not Covered > Error
+```
+
+## Deployment
+
+### Railway (Recommended)
+
+1. Push to GitHub
+2. Connect repository to [Railway](https://railway.app)
+3. Add environment variables in Railway dashboard
+4. Deploy automatically
+
+### Manual Deployment
+
+```bash
+# Using the Procfile
+python src/bot.py
+```
 
 ## Data Sources
 
-Stock compliance data is sourced from [Musaffa.com](https://musaffa.com), a platform that provides Shariah compliance screening for stocks based on Islamic finance principles.
+- [Musaffa](https://musaffa.com) - Shariah compliance screening platform
+- [Zoya Finance](https://zoya.finance) - Halal investing app with compliance data
 
 ## License
 
-This project is for educational and personal use.
+MIT License - See [LICENSE](LICENSE) for details.
