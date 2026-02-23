@@ -46,6 +46,13 @@ REQUEST_TIMEOUT = 30  # seconds
 MAX_RETRIES = 3
 RETRY_DELAY = 1  # seconds (base for exponential backoff)
 
+# Musaffa authentication
+MUSAFFA_EMAIL = os.getenv("MUSAFFA_EMAIL", "")
+MUSAFFA_PASSWORD = os.getenv("MUSAFFA_PASSWORD", "")
+MUSAFFA_LOGIN_URL = "https://musaffa.com/authentication/login"
+MUSAFFA_SESSION_FILE = DATA_DIR / "musaffa_session.json"
+SESSION_MAX_AGE_HOURS = 23  # re-login after 23 h
+
 # Logging configuration
 LOG_FILE = LOGS_DIR / "stock_screener.log"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

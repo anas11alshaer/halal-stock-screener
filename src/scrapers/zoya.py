@@ -6,7 +6,7 @@ import logging
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout, Browser
 
 from config import ZOYA_BASE_URL, REQUEST_TIMEOUT, MAX_RETRIES
-from .base import ComplianceStatus, ScreeningResult, get_chromium_path, MAX_CONCURRENT_PAGES
+from .base import ComplianceStatus, ScreeningResult, get_chromium_path, get_quote_type, MAX_CONCURRENT_PAGES
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +19,19 @@ class ZoyaScraper:
 
     async def _fetch_single_page(self, browser: Browser, ticker: str) -> ScreeningResult:
         """Fetch and parse a single ticker page."""
+        ticker = ticker.upper().strip()
+        quote_type = await get_quote_type(ticker)
+        if quote_type == "ETF":
+            logger.info(f"{ticker}: ETF — Zoya has no public ETF pages, returning NOT_COVERED")
+            return ScreeningResult(
+                ticker=ticker,
+                status=ComplianceStatus.NOT_COVERED,
+                source="zoya",
+                error_message="Zoya does not cover ETFs",
+            )
+
         # Zoya uses lowercase tickers in URLs
-        url = f"{self.base_url}/{ticker.lower().strip()}"
+        url = f"{self.base_url}/{ticker.lower()}"
 
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

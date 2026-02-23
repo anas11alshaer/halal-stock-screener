@@ -23,6 +23,9 @@ dist/
 data/*.db
 *.db
 
+# Musaffa auth session (contains cookies — keep private)
+data/musaffa_session.json
+
 # Logs
 logs/*.log
 *.log

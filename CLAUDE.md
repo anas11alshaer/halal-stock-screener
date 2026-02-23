@@ -87,6 +87,8 @@ Environment variables loaded from `.env` via python-dotenv:
 - `TELEGRAM_BOT_TOKEN` (required): Bot token from BotFather
 - `GEMINI_API_KEY` (optional): Single API key for image analysis
 - `GEMINI_API_KEYS` (optional): Comma-separated list of API keys for higher quota
+- `MUSAFFA_EMAIL` (optional): Musaffa.com account email — required to unlock ETF compliance data
+- `MUSAFFA_PASSWORD` (optional): Musaffa.com account password
 - `CACHE_TTL_HOURS`: Cache expiration (default: 24)
 - `LOG_LEVEL`: Logging verbosity (default: INFO)
 

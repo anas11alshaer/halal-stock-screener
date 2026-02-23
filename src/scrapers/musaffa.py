@@ -3,13 +3,26 @@
 import asyncio
 import logging
 import re
+from datetime import datetime
 
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout, Browser
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout, Browser, BrowserContext
 
-from config import MUSAFFA_BASE_URL, REQUEST_TIMEOUT, MAX_RETRIES
-from .base import ComplianceStatus, ScreeningResult, get_chromium_path, MAX_CONCURRENT_PAGES
+from config import (
+    MUSAFFA_BASE_URL, REQUEST_TIMEOUT, MAX_RETRIES,
+    MUSAFFA_EMAIL, MUSAFFA_PASSWORD, MUSAFFA_LOGIN_URL,
+    MUSAFFA_SESSION_FILE, SESSION_MAX_AGE_HOURS,
+)
+from .base import ComplianceStatus, ScreeningResult, get_chromium_path, get_quote_type, MAX_CONCURRENT_PAGES
+
+MUSAFFA_ETF_BASE_URL = "https://musaffa.com/etf"
 
 logger = logging.getLogger(__name__)
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 class MusaffaScraper:
@@ -18,16 +31,110 @@ class MusaffaScraper:
     def __init__(self):
         self.base_url = MUSAFFA_BASE_URL
 
-    async def _fetch_single_page(self, browser: Browser, ticker: str) -> ScreeningResult:
-        """Fetch and parse a single ticker page."""
-        url = f"{self.base_url}/{ticker.upper().strip()}/"
+    # ------------------------------------------------------------------
+    # Authentication helpers
+    # ------------------------------------------------------------------
 
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        )
+    async def _login(self, context: BrowserContext) -> bool:
+        """Log in to Musaffa and return True on success."""
+        page = await context.new_page()
         try:
-            page = await context.new_page()
+            await page.goto(MUSAFFA_LOGIN_URL, timeout=30000)
+            await asyncio.sleep(2)
+            await page.fill('#email', MUSAFFA_EMAIL)
+            await page.fill('#password', MUSAFFA_PASSWORD)
+            await page.click('button.login-btn')
+            try:
+                await page.wait_for_url(
+                    lambda url: '/authentication/login' not in url,
+                    timeout=15000,
+                )
+                logger.info("Musaffa login successful")
+                return True
+            except PlaywrightTimeout:
+                logger.warning("Musaffa login timed out — proceeding unauthenticated")
+                return False
+        except Exception as e:
+            logger.warning(f"Musaffa login error: {e}")
+            return False
+        finally:
+            await page.close()
 
+    async def _get_context(self, browser: Browser) -> BrowserContext:
+        """Return a browser context, reusing a saved session when available."""
+        # Check for a fresh saved session
+        if MUSAFFA_SESSION_FILE.exists():
+            age_h = (
+                datetime.now() - datetime.fromtimestamp(MUSAFFA_SESSION_FILE.stat().st_mtime)
+            ).total_seconds() / 3600
+            if age_h < SESSION_MAX_AGE_HOURS:
+                logger.debug("Musaffa: reusing saved session (%.1f h old)", age_h)
+                return await browser.new_context(
+                    storage_state=str(MUSAFFA_SESSION_FILE),
+                    user_agent=_USER_AGENT,
+                )
+
+        # Fresh context — attempt login if credentials are configured
+        context = await browser.new_context(user_agent=_USER_AGENT)
+        if MUSAFFA_EMAIL and MUSAFFA_PASSWORD:
+            ok = await self._login(context)
+            if ok:
+                await context.storage_state(path=str(MUSAFFA_SESSION_FILE))
+        else:
+            logger.debug("Musaffa: no credentials configured, skipping login")
+        return context
+
+    # ------------------------------------------------------------------
+    # DOM-based compliance chip parser
+    # ------------------------------------------------------------------
+
+    async def _parse_chip(self, page) -> ComplianceStatus | None:
+        """Query the compliance chip element directly.
+
+        Returns the status if an unlocked chip is found, or None if the chip
+        is locked / absent (caller should fall back to text parsing).
+        """
+        # If the current-status chip is locked, don't pick up historical chips
+        locked = await page.query_selector('div.compliance-chip.locked-chip')
+        if locked:
+            return None
+
+        el = await page.query_selector(
+            'div.compliance-chip:not(.locked-chip) h5.status-text'
+        )
+        if not el:
+            return None
+        text = (await el.inner_text()).strip().lower()
+        mapping = {
+            'halal': ComplianceStatus.HALAL,
+            'not halal': ComplianceStatus.NOT_HALAL,
+            'doubtful': ComplianceStatus.DOUBTFUL,
+            'not covered': ComplianceStatus.NOT_COVERED,
+        }
+        status = mapping.get(text)
+        if status is not None:
+            logger.info(f"Chip status '{text}' found via DOM")
+        else:
+            logger.debug(f"Unrecognised chip text: '{text}'")
+        return status
+
+    # ------------------------------------------------------------------
+    # Page fetching
+    # ------------------------------------------------------------------
+
+    async def _fetch_single_page(
+        self, context: BrowserContext, ticker: str
+    ) -> ScreeningResult:
+        """Fetch and parse a single ticker page using an existing context."""
+        ticker = ticker.upper().strip()
+        quote_type = await get_quote_type(ticker)
+        if quote_type == "ETF":
+            url = f"{MUSAFFA_ETF_BASE_URL}/{ticker}/"
+        else:
+            url = f"{self.base_url}/{ticker}/"
+
+        page = await context.new_page()
+        try:
             try:
                 await page.goto(url, timeout=REQUEST_TIMEOUT * 1000)
             except PlaywrightTimeout:
@@ -46,13 +153,22 @@ class MusaffaScraper:
 
             await asyncio.sleep(0.5)
 
+            # Try DOM chip first (works when authenticated for ETFs)
+            chip_status = await self._parse_chip(page)
+            if chip_status is not None:
+                return ScreeningResult(
+                    ticker=ticker,
+                    status=chip_status,
+                    source="musaffa",
+                )
+
+            # Fall back to text extraction
             content = await page.content()
             text_content = await page.evaluate("() => document.body.innerText")
-
             return self._parse_content(ticker, content, text_content)
 
         finally:
-            await context.close()
+            await page.close()
 
     def _parse_content(self, ticker: str, html: str, text: str) -> ScreeningResult:
         """Parse page content to extract compliance info."""
@@ -91,12 +207,6 @@ class MusaffaScraper:
         elif "halal" in compliance_section:
             status = ComplianceStatus.HALAL
             logger.info(f"{ticker}: HALAL (musaffa)")
-        elif re.search(r'\bhalal\b', text_lower) and not re.search(r'\bnot\s+halal\b', text_lower):
-            status = ComplianceStatus.HALAL
-            logger.info(f"{ticker}: HALAL (musaffa, fallback)")
-        elif re.search(r'\bnot\s+halal\b', text_lower):
-            status = ComplianceStatus.NOT_HALAL
-            logger.info(f"{ticker}: NOT_HALAL (musaffa, fallback)")
 
         if status == ComplianceStatus.NOT_COVERED:
             logger.warning(f"{ticker}: Could not determine status (musaffa)")
@@ -133,6 +243,10 @@ class MusaffaScraper:
             details=details,
         )
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     async def screen_ticker(self, ticker: str) -> ScreeningResult:
         """Screen a single ticker for Halal compliance."""
         ticker = ticker.upper().strip()
@@ -147,7 +261,11 @@ class MusaffaScraper:
                         executable_path=chromium_path,
                     )
                     try:
-                        return await self._fetch_single_page(browser, ticker)
+                        context = await self._get_context(browser)
+                        try:
+                            return await self._fetch_single_page(context, ticker)
+                        finally:
+                            await context.close()
                     finally:
                         await browser.close()
             except Exception as e:
@@ -163,7 +281,7 @@ class MusaffaScraper:
         )
 
     async def screen_multiple(self, tickers: list[str]) -> list[ScreeningResult]:
-        """Screen multiple tickers in parallel."""
+        """Screen multiple tickers in parallel, sharing one authenticated context."""
         if not tickers:
             return []
 
@@ -176,30 +294,38 @@ class MusaffaScraper:
                 executable_path=chromium_path,
             )
             try:
-                semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
+                # One login / session for the entire batch
+                context = await self._get_context(browser)
+                try:
+                    semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
 
-                async def fetch_with_semaphore(ticker: str) -> tuple[str, ScreeningResult]:
-                    async with semaphore:
-                        for attempt in range(MAX_RETRIES):
-                            try:
-                                result = await self._fetch_single_page(browser, ticker)
-                                return (ticker, result)
-                            except Exception as e:
-                                logger.warning(f"Error screening {ticker} (attempt {attempt + 1}): {e}")
-                                if attempt < MAX_RETRIES - 1:
-                                    await asyncio.sleep(1)
-                        return (ticker, ScreeningResult(
-                            ticker=ticker,
-                            status=ComplianceStatus.ERROR,
-                            source="musaffa",
-                            error_message="Failed to fetch data",
-                        ))
+                    async def fetch_with_semaphore(ticker: str) -> tuple[str, ScreeningResult]:
+                        async with semaphore:
+                            for attempt in range(MAX_RETRIES):
+                                try:
+                                    result = await self._fetch_single_page(context, ticker)
+                                    return (ticker, result)
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Error screening {ticker} (attempt {attempt + 1}): {e}"
+                                    )
+                                    if attempt < MAX_RETRIES - 1:
+                                        await asyncio.sleep(1)
+                            return (ticker, ScreeningResult(
+                                ticker=ticker,
+                                status=ComplianceStatus.ERROR,
+                                source="musaffa",
+                                error_message="Failed to fetch data",
+                            ))
 
-                tasks = [fetch_with_semaphore(t) for t in tickers]
-                completed = await asyncio.gather(*tasks)
+                    tasks = [fetch_with_semaphore(t) for t in tickers]
+                    completed = await asyncio.gather(*tasks)
 
-                for ticker, result in completed:
-                    results[ticker] = result
+                    for ticker, result in completed:
+                        results[ticker] = result
+
+                finally:
+                    await context.close()
 
             finally:
                 await browser.close()
