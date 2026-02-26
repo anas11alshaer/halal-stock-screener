@@ -22,6 +22,7 @@ dist/
 # Database
 data/*.db
 *.db
+data/oracle_cloud
 
 # Musaffa auth session (contains cookies — keep private)
 data/musaffa_session.json

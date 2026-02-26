@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import shutil
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -72,20 +71,3 @@ class ScreeningResult:
             "details": self.details,
             "error_message": self.error_message,
         }
-
-
-def get_chromium_path() -> str | None:
-    """Get system Chromium path if available."""
-    paths = [
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        shutil.which("chromium"),
-    ]
-    for path in paths:
-        if path and shutil.os.path.exists(path):
-            return path
-    return None
-
-
-# Scraper constants
-MAX_CONCURRENT_PAGES = 2

@@ -1,6 +1,6 @@
 """Stock compliance scrapers."""
 
-from .base import ComplianceStatus, ScreeningResult, get_chromium_path
+from .base import ComplianceStatus, ScreeningResult
 from .musaffa import MusaffaScraper
 from .zoya import ZoyaScraper
 
@@ -9,5 +9,4 @@ __all__ = [
     "ScreeningResult",
     "MusaffaScraper",
     "ZoyaScraper",
-    "get_chromium_path",
 ]

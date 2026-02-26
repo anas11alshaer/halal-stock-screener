@@ -5,11 +5,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright with dependencies (handles all system deps automatically)
-RUN playwright install --with-deps chromium
+# Create a non-root user (UID 1000 to match host ubuntu user for volume mounts)
+RUN groupadd -g 1000 appuser && useradd -u 1000 -g appuser -m appuser \
+    && mkdir -p data logs \
+    && chown -R appuser:appuser /app
 
-COPY . .
+# Copy only the application source, owned by appuser
+COPY --chown=appuser:appuser src/ ./src/
+
+USER appuser
 
 ENV PYTHONUNBUFFERED=1
 
-CMD python src/bot.py
+CMD ["python", "src/bot.py"]

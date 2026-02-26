@@ -78,10 +78,18 @@ def resolve_compliance(
         return (final_result, False)
 
     # One source has NOT_COVERED or ERROR - use the other
+    # Always preserve company_name from whichever source has it
     if musaffa_status in (ComplianceStatus.NOT_COVERED, ComplianceStatus.ERROR):
         if zoya_status not in (ComplianceStatus.NOT_COVERED, ComplianceStatus.ERROR):
             logger.info(f"{ticker}: Using Zoya result ({zoya_status.value}) since Musaffa is {musaffa_status.value}")
-            return (zoya, False)
+            result = ScreeningResult(
+                ticker=ticker,
+                status=zoya_status,
+                source="zoya",
+                company_name=musaffa.company_name or zoya.company_name,
+                details=zoya.details,
+            )
+            return (result, False)
 
     if zoya_status in (ComplianceStatus.NOT_COVERED, ComplianceStatus.ERROR):
         if musaffa_status not in (ComplianceStatus.NOT_COVERED, ComplianceStatus.ERROR):

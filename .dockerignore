@@ -1,0 +1,53 @@
+# Secrets & environment
+.env
+.env.example
+
+# Version control
+.git
+.gitignore
+
+# Runtime data (mount these as Docker volumes instead)
+data/
+logs/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Development & testing
+.pytest_cache/
+tests/
+.coverage
+htmlcov/
+
+# Documentation & project files (not needed at runtime)
+CLAUDE.md
+README.md
+LICENSE
+runtime.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Legacy / temp
+old/
+tmp/
+temp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local files
+.claude/

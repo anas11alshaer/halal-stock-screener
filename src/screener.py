@@ -19,6 +19,12 @@ class ScreenResponse:
     results: list[ScreeningResult]
     from_cache: list[bool]
     error: Optional[str] = None
+    # Per-ticker source results: {ticker: {"musaffa": ScreeningResult, "zoya": ScreeningResult}}
+    source_results: dict = None
+
+    def __post_init__(self):
+        if self.source_results is None:
+            self.source_results = {}
 
     def format_message(self) -> str:
         """Format results as a user-friendly HTML message."""
@@ -32,80 +38,111 @@ class ScreenResponse:
 
         # Single ticker: detailed view
         if len(self.results) == 1:
-            return self._format_single_ticker(self.results[0])
+            r = self.results[0]
+            musaffa = self.source_results.get(r.ticker, {}).get("musaffa")
+            zoya = self.source_results.get(r.ticker, {}).get("zoya")
+            return self._format_single_ticker(r, musaffa, zoya)
 
-        # Multiple tickers: grouped view
+        # Multiple tickers: compact view
         return self._format_multiple_tickers()
 
-    def _format_single_ticker(self, result: ScreeningResult) -> str:
+    def _format_single_ticker(
+        self,
+        result: ScreeningResult,
+        musaffa: Optional[ScreeningResult] = None,
+        zoya: Optional[ScreeningResult] = None,
+    ) -> str:
         """Format a single ticker result with details."""
-        status_display = {
-            ComplianceStatus.HALAL: ("✅", "Halal"),
-            ComplianceStatus.NOT_HALAL: ("❌", "Not Halal"),
-            ComplianceStatus.DOUBTFUL: ("⚠️", "Doubtful"),
-            ComplianceStatus.NOT_COVERED: ("❓", "Not Covered"),
-            ComplianceStatus.ERROR: ("⚠️", "Error"),
+        STATUS_ICON = {
+            ComplianceStatus.HALAL: "✅",
+            ComplianceStatus.NOT_HALAL: "❌",
+            ComplianceStatus.DOUBTFUL: "⚠️",
+            ComplianceStatus.NOT_COVERED: "❓",
+            ComplianceStatus.ERROR: "⚠️",
+        }
+        STATUS_TEXT = {
+            ComplianceStatus.HALAL: "Halal",
+            ComplianceStatus.NOT_HALAL: "Not Halal",
+            ComplianceStatus.DOUBTFUL: "Doubtful",
+            ComplianceStatus.NOT_COVERED: "Not Covered",
+            ComplianceStatus.ERROR: "Error",
         }
 
-        icon, status_text = status_display.get(result.status, ("❓", "Unknown"))
+        icon = STATUS_ICON.get(result.status, "❓")
 
-        lines = [f"<b>{result.ticker}</b>"]
+        lines = []
 
-        # Company name if available
+        # Header with company name
         if result.company_name:
-            lines[0] = f"<b>{result.ticker}</b>  •  {result.company_name}"
+            lines.append(f"<b>{result.company_name}</b> ({result.ticker})")
+        else:
+            lines.append(f"<b>{result.ticker}</b>")
 
-        # Status line
-        lines.append(f"{icon} <b>{status_text}</b>")
+        lines.append("")
 
-        # Compliance ranking if available
-        if result.compliance_ranking:
-            lines.append(f"📊 Ranking: {result.compliance_ranking}")
+        # Overall verdict
+        lines.append(f"{icon} Verdict: <b>{STATUS_TEXT.get(result.status, 'Unknown')}</b>")
+        lines.append("")
 
-        # Show conflict info if present in details
+        # Source breakdown
+        lines.append("─── Sources ───")
+        if musaffa:
+            m_icon = STATUS_ICON.get(musaffa.status, "❓")
+            lines.append(f"{m_icon} Musaffa: <b>{STATUS_TEXT.get(musaffa.status, 'Unknown')}</b>")
+        if zoya:
+            z_icon = STATUS_ICON.get(zoya.status, "❓")
+            lines.append(f"{z_icon} Zoya: <b>{STATUS_TEXT.get(zoya.status, 'Unknown')}</b>")
+
+        # Conflict warning
         if result.details and "Conflict:" in result.details:
-            lines.append(f"⚡ {result.details}")
+            lines.append(f"\n⚡ Sources disagree — using more restrictive result")
 
         return "\n".join(lines)
 
     def _format_multiple_tickers(self) -> str:
-        """Format multiple ticker results in a clean grouped view."""
-        # Group results by status
-        groups = {
-            ComplianceStatus.HALAL: [],
-            ComplianceStatus.NOT_HALAL: [],
-            ComplianceStatus.DOUBTFUL: [],
+        """Format multiple ticker results showing per-source breakdown."""
+        STATUS_ICON = {
+            ComplianceStatus.HALAL: "✅",
+            ComplianceStatus.NOT_HALAL: "❌",
+            ComplianceStatus.DOUBTFUL: "⚠️",
+            ComplianceStatus.NOT_COVERED: "❓",
+            ComplianceStatus.ERROR: "⚠️",
         }
-        other = []
+        STATUS_SHORT = {
+            ComplianceStatus.HALAL: "Halal",
+            ComplianceStatus.NOT_HALAL: "Not Halal",
+            ComplianceStatus.DOUBTFUL: "Doubtful",
+            ComplianceStatus.NOT_COVERED: "N/A",
+            ComplianceStatus.ERROR: "Error",
+        }
+
+        lines = [f"<b>Screening Results</b>\n"]
 
         for result in self.results:
-            if result.status in groups:
-                groups[result.status].append(result.ticker)
+            icon = STATUS_ICON.get(result.status, "❓")
+            status = STATUS_SHORT.get(result.status, "Unknown")
+
+            # Header line
+            if result.company_name:
+                lines.append(f"{icon} <b>{result.ticker}</b> — {result.company_name}")
             else:
-                other.append(result.ticker)
+                lines.append(f"{icon} <b>{result.ticker}</b> — {status}")
 
-        lines = []
+            # Source details
+            sources = self.source_results.get(result.ticker, {})
+            musaffa = sources.get("musaffa")
+            zoya = sources.get("zoya")
+            parts = []
+            if musaffa:
+                parts.append(f"Musaffa: {STATUS_SHORT.get(musaffa.status, '?')}")
+            if zoya:
+                parts.append(f"Zoya: {STATUS_SHORT.get(zoya.status, '?')}")
+            if parts:
+                lines.append(f"      {' · '.join(parts)}")
 
-        # Halal stocks
-        if groups[ComplianceStatus.HALAL]:
-            tickers = groups[ComplianceStatus.HALAL]
-            lines.append(f"✅ <b>Halal</b>  ·  {', '.join(tickers)}")
+            lines.append("")
 
-        # Not Halal stocks
-        if groups[ComplianceStatus.NOT_HALAL]:
-            tickers = groups[ComplianceStatus.NOT_HALAL]
-            lines.append(f"❌ <b>Not Halal</b>  ·  {', '.join(tickers)}")
-
-        # Doubtful stocks
-        if groups[ComplianceStatus.DOUBTFUL]:
-            tickers = groups[ComplianceStatus.DOUBTFUL]
-            lines.append(f"⚠️ <b>Doubtful</b>  ·  {', '.join(tickers)}")
-
-        # Other (not covered, errors)
-        if other:
-            lines.append(f"❓ <b>Not Covered</b>  ·  {', '.join(other)}")
-
-        return "\n".join(lines)
+        return "\n".join(lines).strip()
 
 
 class StockScreener:
@@ -258,7 +295,19 @@ class StockScreener:
         if conflicts:
             logger.warning(f"Conflicts detected for tickers: {', '.join(conflicts)}")
 
-        return ScreenResponse(results=results, from_cache=from_cache)
+        # Build per-ticker source breakdown for display
+        source_results = {}
+        for ticker in tickers:
+            source_results[ticker] = {
+                "musaffa": all_musaffa.get(ticker),
+                "zoya": all_zoya.get(ticker),
+            }
+
+        return ScreenResponse(
+            results=results,
+            from_cache=from_cache,
+            source_results=source_results,
+        )
 
     async def screen_text(
         self,
@@ -340,5 +389,8 @@ class StockScreener:
 
     def clear_expired_cache(self):
         """Clear expired cache entries."""
-        TickerCache.clear_expired()
-        ImageCache.clear_expired()
+        try:
+            TickerCache.clear_expired()
+            ImageCache.clear_expired()
+        except Exception as e:
+            logger.warning(f"Failed to clear expired cache: {e}")
