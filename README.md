@@ -5,7 +5,7 @@ A Telegram bot that checks whether stocks and ETFs are Shariah-compliant (Halal)
 ## Features
 
 - **Dual-source verification** — Cross-references Musaffa and Zoya for reliable results
-- **ETF support** — Authenticates with Musaffa to unlock ETF compliance data
+- **ETF support** — Screens ETFs via Musaffa (no account required)
 - **Conservative conflict resolution** — When sources disagree, the more restrictive status wins
 - **Multiple input methods** — Send ticker symbols as text or upload portfolio screenshots
 - **AI image analysis** — Extracts tickers from screenshots using Google Gemini
@@ -19,7 +19,6 @@ A Telegram bot that checks whether stocks and ETFs are Shariah-compliant (Halal)
 
 - Python 3.11+
 - Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
-- Musaffa account (free — required for ETF compliance data)
 - Google Gemini API key (optional, for image analysis)
 
 ### Installation
@@ -51,14 +50,10 @@ Copy `.env.example` to `.env` and fill in the values:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Bot token from BotFather |
-| `MUSAFFA_EMAIL` | Recommended | — | Musaffa account email (unlocks ETF data) |
-| `MUSAFFA_PASSWORD` | Recommended | — | Musaffa account password |
 | `GEMINI_API_KEY` | No | — | Google Gemini key for image analysis |
 | `GEMINI_API_KEYS` | No | — | Comma-separated Gemini keys for higher quota |
 | `CACHE_TTL_HOURS` | No | `24` | Cache expiration in hours |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-
-> **ETF note:** Without Musaffa credentials, ETF pages return a locked status and the bot reports `Not Covered`. A free Musaffa account is sufficient.
 
 ## Usage
 
@@ -109,7 +104,7 @@ halal-stock-screener/
 │   ├── config.py           # Configuration & path constants
 │   └── scrapers/
 │       ├── base.py         # BaseScraper ABC, ComplianceStatus enum, shared helpers
-│       ├── musaffa.py      # Musaffa scraper (stocks + ETFs, session auth)
+│       ├── musaffa.py      # Musaffa scraper (stocks + ETFs)
 │       └── zoya.py         # Zoya scraper (stocks only)
 ├── tests/
 │   ├── test_scraper.py         # Scraper & resolver integration tests
