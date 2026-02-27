@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from scrapers import ScreeningResult, ComplianceStatus
+from scrapers import ScreeningResult, ComplianceStatus, STATUS_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -15,15 +15,6 @@ STATUS_PRIORITY = {
     ComplianceStatus.NOT_COVERED: 4,
     ComplianceStatus.ERROR: 5,
 }
-
-STATUS_DISPLAY = {
-    ComplianceStatus.NOT_HALAL: "Not Halal",
-    ComplianceStatus.DOUBTFUL: "Doubtful",
-    ComplianceStatus.HALAL: "Halal",
-    ComplianceStatus.NOT_COVERED: "Not Covered",
-    ComplianceStatus.ERROR: "Error",
-}
-
 
 def resolve_compliance(
     musaffa: Optional[ScreeningResult],
@@ -138,7 +129,7 @@ def resolve_compliance(
         source="combined",
         compliance_ranking=musaffa.compliance_ranking if winning_source == "musaffa" else None,
         company_name=musaffa.company_name if winning_source == "musaffa" else None,
-        details=f"Conflict: Musaffa={STATUS_DISPLAY[musaffa_status]}, Zoya={STATUS_DISPLAY[zoya_status]}"
+        details=f"Conflict: Musaffa={STATUS_TEXT[musaffa_status]}, Zoya={STATUS_TEXT[zoya_status]}"
     )
 
     return (final_result, True)

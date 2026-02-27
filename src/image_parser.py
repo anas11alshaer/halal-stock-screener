@@ -341,7 +341,7 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
             valid_tickers = []
             for ticker in tickers:
                 cleaned = self._clean_ticker(ticker)
-                if cleaned and self._is_valid_ticker(cleaned):
+                if cleaned and is_valid_ticker(cleaned):
                     valid_tickers.append(cleaned)
                 elif cleaned:
                     logger.debug(f"Ticker '{ticker}' -> '{cleaned}' filtered out by validation")
@@ -367,10 +367,6 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
 
         return ticker if ticker else None
 
-    def _is_valid_ticker(self, ticker: str) -> bool:
-        """Check if a string looks like a valid stock ticker."""
-        return is_valid_ticker(ticker)
-
     def _extract_tickers_regex(self, text: str) -> list[str]:
         """Fallback method to extract tickers using regex."""
         potential = re.findall(r"\b([A-Z]{1,5})\b", text)
@@ -378,7 +374,7 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
         valid_tickers = []
         for ticker in potential:
             cleaned = self._clean_ticker(ticker)
-            if cleaned and self._is_valid_ticker(cleaned):
+            if cleaned and is_valid_ticker(cleaned):
                 valid_tickers.append(cleaned)
 
         # Remove duplicates while preserving order

@@ -1,5 +1,6 @@
 """Database module for caching and historical tracking."""
 
+import json
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional
@@ -199,17 +200,6 @@ class TickerCache:
             }
 
     @staticmethod
-    def get_all_sources(ticker: str) -> dict[str, dict]:
-        """Get cached results for a ticker from all sources."""
-        ticker = ticker.upper()
-        results = {}
-        for source in ["musaffa", "zoya"]:
-            cached = TickerCache.get(ticker, source)
-            if cached:
-                results[source] = cached
-        return results
-
-    @staticmethod
     def set(ticker: str, status: str, source: str = "musaffa",
             compliance_ranking: str = None, details: str = None):
         """Cache a ticker result for a specific source."""
@@ -280,21 +270,6 @@ class CheckHistory:
             return [dict(row) for row in cursor.fetchall()]
 
     @staticmethod
-    def get_ticker_history(ticker: str, limit: int = 20) -> list:
-        """Get recent checks for a ticker."""
-        ticker = ticker.upper()
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT user_id, final_status as status, musaffa_status, zoya_status, is_conflict, checked_at
-                FROM checks
-                WHERE ticker = ?
-                ORDER BY checked_at DESC
-                LIMIT ?
-            """, (ticker, limit))
-            return [dict(row) for row in cursor.fetchall()]
-
-    @staticmethod
     def get_stats(user_id: int) -> dict:
         """Get statistics for a user."""
         with get_connection() as conn:
@@ -362,7 +337,6 @@ class ImageCache:
                 return None
 
             # Parse JSON list of tickers
-            import json
             try:
                 return json.loads(row["tickers"])
             except json.JSONDecodeError:
@@ -371,7 +345,6 @@ class ImageCache:
     @staticmethod
     def set(image_hash: str, tickers: list[str]):
         """Cache extracted tickers for an image hash."""
-        import json
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""

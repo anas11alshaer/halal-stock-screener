@@ -1,7 +1,5 @@
 """Telegram bot entry point for Stock Screener."""
 
-print("Bot module loading...")
-
 import logging
 import os
 import sys
@@ -9,35 +7,17 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
 
-print("Standard imports OK")
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
-try:
-    from telegram import Update
-    from telegram.ext import (
-        Application,
-        CommandHandler,
-        MessageHandler,
-        ContextTypes,
-        filters
-    )
-    print("Telegram imports OK")
-except Exception as e:
-    print(f"Telegram import error: {e}")
-    raise
-
-try:
-    from config import TELEGRAM_BOT_TOKEN, LOG_FILE, LOG_LEVEL
-    print("Config import OK")
-except Exception as e:
-    print(f"Config import error: {e}")
-    raise
-
-try:
-    from screener import StockScreener
-    print("Screener import OK")
-except Exception as e:
-    print(f"Screener import error: {e}")
-    raise
+from config import TELEGRAM_BOT_TOKEN, LOG_FILE, LOG_LEVEL
+from screener import StockScreener
 
 # Configure logging - only use file handler if directory exists
 log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -53,6 +33,7 @@ logging.basicConfig(
     handlers=log_handlers
 )
 logger = logging.getLogger(__name__)
+
 
 # Health check server for Railway
 class HealthHandler(BaseHTTPRequestHandler):
@@ -70,18 +51,12 @@ def start_health_server():
     """Start health check HTTP server in background thread."""
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"Health check server running on port {port}")
+    logger.info(f"Health check server running on port {port}")
     server.serve_forever()
 
 
 # Global screener instance
-print("Initializing StockScreener...")
-try:
-    screener = StockScreener()
-    print("StockScreener initialized OK")
-except Exception as e:
-    print(f"StockScreener init error: {e}")
-    raise
+screener = StockScreener()
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -239,20 +214,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot."""
-    print("=" * 50)
-    print("HALAL STOCK SCREENER BOT STARTING")
-    print("=" * 50)
-
     # Start health check server for Railway
     health_thread = threading.Thread(target=start_health_server, daemon=True)
     health_thread.start()
 
     if not TELEGRAM_BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN is not set!")
         logger.error("TELEGRAM_BOT_TOKEN is not set!")
         sys.exit(1)
 
-    print(f"Token configured: {TELEGRAM_BOT_TOKEN[:10]}...")
     logger.info("Starting Stock Screener Bot...")
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()

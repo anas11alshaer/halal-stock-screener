@@ -1,26 +1,23 @@
 """Zoya.finance scraper for Halal stock screening."""
 
-import asyncio
 import json
 import logging
 import re
 
 import httpx
 
-from config import ZOYA_BASE_URL, REQUEST_TIMEOUT, MAX_RETRIES
-from .base import ComplianceStatus, ScreeningResult, get_quote_type
+from config import ZOYA_BASE_URL
+from .base import BaseScraper, ComplianceStatus, ScreeningResult, get_quote_type
 
 logger = logging.getLogger(__name__)
 
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
 
-
-class ZoyaScraper:
+class ZoyaScraper(BaseScraper):
     """Scraper for Zoya.finance stock screening data."""
+
+    @property
+    def source_name(self) -> str:
+        return "zoya"
 
     def __init__(self):
         self.base_url = ZOYA_BASE_URL
@@ -67,10 +64,9 @@ class ZoyaScraper:
                 error_message="Stock not found on Zoya",
             )
 
-        html = response.text
-        return self._parse_content(ticker, html)
+        return self._parse_content(ticker, response.text)
 
-    def _parse_content(self, ticker: str, html: str) -> ScreeningResult:
+    def _parse_content(self, ticker: str, page_html: str) -> ScreeningResult:
         """Parse page content to extract compliance info.
 
         Primary strategy: extract the FAQ JSON-LD structured data which
@@ -79,7 +75,7 @@ class ZoyaScraper:
         """
         ticker = ticker.upper()
 
-        if "page not found" in html.lower() or "<title>404" in html.lower():
+        if "page not found" in page_html.lower() or "<title>404" in page_html.lower():
             return ScreeningResult(
                 ticker=ticker,
                 status=ComplianceStatus.NOT_COVERED,
@@ -88,7 +84,7 @@ class ZoyaScraper:
             )
 
         # Strategy 1: Parse JSON-LD FAQ structured data
-        status = self._parse_jsonld(ticker, html)
+        status = self._parse_jsonld(ticker, page_html)
         if status is not None:
             return ScreeningResult(ticker=ticker, status=status, source="zoya")
 
@@ -97,7 +93,7 @@ class ZoyaScraper:
         # or   <h2>BAC stock is not <a ...>Shariah-compliant</a></h2>
         h2_match = re.search(
             rf'{ticker.lower()}\s+stock\s+is\s+(not\s+)?.*?shariah-compliant',
-            html.lower(),
+            page_html.lower(),
         )
         if h2_match:
             if h2_match.group(1):  # "not" was captured
@@ -115,12 +111,11 @@ class ZoyaScraper:
             source="zoya",
         )
 
-    def _parse_jsonld(self, ticker: str, html: str) -> ComplianceStatus | None:
+    def _parse_jsonld(self, ticker: str, page_html: str) -> ComplianceStatus | None:
         """Extract compliance status from JSON-LD FAQPage data."""
-        # Find all JSON-LD blocks
         for match in re.finditer(
             r'<script\s+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html,
+            page_html,
             re.DOTALL,
         ):
             try:
@@ -135,73 +130,11 @@ class ZoyaScraper:
                 answer_text = (
                     entity.get("acceptedAnswer", {}).get("text", "").lower()
                 )
-                if "is not shariah-compliant" in answer_text or "not shariah-compliant" in answer_text:
+                if "not shariah-compliant" in answer_text:
                     logger.info(f"{ticker}: NOT_HALAL (zoya, json-ld)")
                     return ComplianceStatus.NOT_HALAL
-                elif "is shariah-compliant" in answer_text or "shariah-compliant" in answer_text:
+                elif "shariah-compliant" in answer_text:
                     logger.info(f"{ticker}: HALAL (zoya, json-ld)")
                     return ComplianceStatus.HALAL
 
         return None
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    async def screen_ticker(self, ticker: str) -> ScreeningResult:
-        """Screen a single ticker for Halal compliance."""
-        ticker = ticker.upper().strip()
-        logger.info(f"Screening {ticker} on Zoya")
-
-        for attempt in range(MAX_RETRIES):
-            try:
-                async with httpx.AsyncClient(
-                    headers=_HEADERS,
-                    timeout=REQUEST_TIMEOUT,
-                    follow_redirects=True,
-                ) as client:
-                    return await self._fetch_single(client, ticker)
-            except Exception as e:
-                logger.warning(f"Error screening {ticker} on Zoya (attempt {attempt + 1}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(2 ** attempt)
-
-        return ScreeningResult(
-            ticker=ticker,
-            status=ComplianceStatus.ERROR,
-            source="zoya",
-            error_message="Failed to fetch data after multiple attempts",
-        )
-
-    async def screen_multiple(self, tickers: list[str]) -> list[ScreeningResult]:
-        """Screen multiple tickers in parallel."""
-        if not tickers:
-            return []
-
-        async with httpx.AsyncClient(
-            headers=_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-            follow_redirects=True,
-        ) as client:
-
-            async def fetch_with_retry(ticker: str) -> tuple[str, ScreeningResult]:
-                for attempt in range(MAX_RETRIES):
-                    try:
-                        result = await self._fetch_single(client, ticker)
-                        return (ticker, result)
-                    except Exception as e:
-                        logger.warning(f"Error screening {ticker} (attempt {attempt + 1}): {e}")
-                        if attempt < MAX_RETRIES - 1:
-                            await asyncio.sleep(1)
-                return (ticker, ScreeningResult(
-                    ticker=ticker,
-                    status=ComplianceStatus.ERROR,
-                    source="zoya",
-                    error_message="Failed to fetch data",
-                ))
-
-            tasks = [fetch_with_retry(t) for t in tickers]
-            completed = await asyncio.gather(*tasks)
-
-        results = {ticker: result for ticker, result in completed}
-        return [results[t] for t in tickers]

@@ -16,7 +16,6 @@ python src/bot.py
 **Install dependencies:**
 ```bash
 pip install -r requirements.txt
-playwright install chromium
 ```
 
 **Run tests:**
@@ -49,10 +48,10 @@ Telegram → bot.py → screener.py → scrapers/ → Musaffa.com
    - Calls both scrapers in parallel for uncached tickers
    - Uses resolver.py to handle conflicts between sources
    - Records results in user history
-3. **scrapers/** package uses Playwright to render JavaScript-heavy pages:
-   - `musaffa.py`: Scrapes Musaffa.com
-   - `zoya.py`: Scrapes Zoya
-   - `base.py`: Shared base class, ComplianceStatus enum, ScreeningResult dataclass
+3. **scrapers/** package uses httpx (async) to fetch pages:
+   - `base.py`: `BaseScraper` ABC with shared retry logic, `ComplianceStatus` enum, `ScreeningResult` dataclass, `STATUS_ICON`/`STATUS_TEXT` dicts, `DEFAULT_HEADERS`
+   - `musaffa.py`: `MusaffaScraper` — scrapes Musaffa.com via meta description tag (SSR)
+   - `zoya.py`: `ZoyaScraper` — scrapes Zoya via JSON-LD FAQPage structured data
 4. **database.py** provides three tables:
    - `cache`: Ticker screening results (per source)
    - `checks`: User check history
@@ -61,7 +60,8 @@ Telegram → bot.py → screener.py → scrapers/ → Musaffa.com
 ### Key Classes
 
 - `StockScreener` (screener.py): Main orchestrator, coordinates caching, scraping, and history
-- `MusaffaScraper` / `ZoyaScraper` (scrapers/): Playwright-based scrapers with retry logic
+- `BaseScraper` (scrapers/base.py): Abstract base with shared `screen_ticker()` / `screen_multiple()` retry logic
+- `MusaffaScraper` / `ZoyaScraper` (scrapers/): Concrete scrapers implementing `_fetch_single()` and parsing
 - `ImageParser` (image_parser.py): Gemini API integration with caching and retry logic
 - `TickerCache` / `CheckHistory` / `ImageCache` (database.py): SQLite data access layer
 - `resolve_compliance` (resolver.py): Resolves conflicts between multiple screening sources
@@ -69,6 +69,10 @@ Telegram → bot.py → screener.py → scrapers/ → Musaffa.com
 ### Compliance Status Enum
 
 Defined in `scrapers/base.py` as `ComplianceStatus`: HALAL, NOT_HALAL, DOUBTFUL, NOT_COVERED, ERROR
+
+Display helpers also in `scrapers/base.py`:
+- `STATUS_ICON`: maps `ComplianceStatus` → emoji string
+- `STATUS_TEXT`: maps `ComplianceStatus` → human-readable string
 
 ### Image Parser Features
 
@@ -87,8 +91,6 @@ Environment variables loaded from `.env` via python-dotenv:
 - `TELEGRAM_BOT_TOKEN` (required): Bot token from BotFather
 - `GEMINI_API_KEY` (optional): Single API key for image analysis
 - `GEMINI_API_KEYS` (optional): Comma-separated list of API keys for higher quota
-- `MUSAFFA_EMAIL` (optional): Musaffa.com account email — required to unlock ETF compliance data
-- `MUSAFFA_PASSWORD` (optional): Musaffa.com account password
 - `CACHE_TTL_HOURS`: Cache expiration (default: 24)
 - `LOG_LEVEL`: Logging verbosity (default: INFO)
 
@@ -106,7 +108,7 @@ src/
 ├── screener.py         # Main orchestrator
 └── scrapers/
     ├── __init__.py     # Package exports
-    ├── base.py         # Base class, enums, dataclasses
+    ├── base.py         # BaseScraper ABC, enums, dataclasses, shared constants
     ├── musaffa.py      # Musaffa.com scraper
     └── zoya.py         # Zoya scraper
 tests/

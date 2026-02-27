@@ -1,11 +1,12 @@
 """Core screening logic that orchestrates the full check flow."""
 
 import asyncio
+import html
 import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from scrapers import MusaffaScraper, ZoyaScraper, ScreeningResult, ComplianceStatus
+from scrapers import MusaffaScraper, ZoyaScraper, ScreeningResult, ComplianceStatus, STATUS_ICON, STATUS_TEXT
 from resolver import resolve_compliance
 from image_parser import ImageParser, parse_text_for_tickers, QuotaExceededError
 from database import TickerCache, CheckHistory, ImageCache, init_database
@@ -28,8 +29,6 @@ class ScreenResponse:
 
     def format_message(self) -> str:
         """Format results as a user-friendly HTML message."""
-        import html
-
         if self.error:
             return f"❌ {html.escape(self.error)}"
 
@@ -53,21 +52,6 @@ class ScreenResponse:
         zoya: Optional[ScreeningResult] = None,
     ) -> str:
         """Format a single ticker result with details."""
-        STATUS_ICON = {
-            ComplianceStatus.HALAL: "✅",
-            ComplianceStatus.NOT_HALAL: "❌",
-            ComplianceStatus.DOUBTFUL: "⚠️",
-            ComplianceStatus.NOT_COVERED: "❓",
-            ComplianceStatus.ERROR: "⚠️",
-        }
-        STATUS_TEXT = {
-            ComplianceStatus.HALAL: "Halal",
-            ComplianceStatus.NOT_HALAL: "Not Halal",
-            ComplianceStatus.DOUBTFUL: "Doubtful",
-            ComplianceStatus.NOT_COVERED: "Not Covered",
-            ComplianceStatus.ERROR: "Error",
-        }
-
         icon = STATUS_ICON.get(result.status, "❓")
 
         lines = []
@@ -101,26 +85,11 @@ class ScreenResponse:
 
     def _format_multiple_tickers(self) -> str:
         """Format multiple ticker results showing per-source breakdown."""
-        STATUS_ICON = {
-            ComplianceStatus.HALAL: "✅",
-            ComplianceStatus.NOT_HALAL: "❌",
-            ComplianceStatus.DOUBTFUL: "⚠️",
-            ComplianceStatus.NOT_COVERED: "❓",
-            ComplianceStatus.ERROR: "⚠️",
-        }
-        STATUS_SHORT = {
-            ComplianceStatus.HALAL: "Halal",
-            ComplianceStatus.NOT_HALAL: "Not Halal",
-            ComplianceStatus.DOUBTFUL: "Doubtful",
-            ComplianceStatus.NOT_COVERED: "N/A",
-            ComplianceStatus.ERROR: "Error",
-        }
-
         lines = [f"<b>Screening Results</b>\n"]
 
         for result in self.results:
             icon = STATUS_ICON.get(result.status, "❓")
-            status = STATUS_SHORT.get(result.status, "Unknown")
+            status = STATUS_TEXT.get(result.status, "Unknown")
 
             # Header line
             if result.company_name:
@@ -134,9 +103,9 @@ class ScreenResponse:
             zoya = sources.get("zoya")
             parts = []
             if musaffa:
-                parts.append(f"Musaffa: {STATUS_SHORT.get(musaffa.status, '?')}")
+                parts.append(f"Musaffa: {STATUS_TEXT.get(musaffa.status, '?')}")
             if zoya:
-                parts.append(f"Zoya: {STATUS_SHORT.get(zoya.status, '?')}")
+                parts.append(f"Zoya: {STATUS_TEXT.get(zoya.status, '?')}")
             if parts:
                 lines.append(f"      {' · '.join(parts)}")
 
