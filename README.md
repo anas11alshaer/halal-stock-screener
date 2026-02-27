@@ -136,13 +136,6 @@ docker build -t halal-screener .
 docker run --env-file .env halal-screener
 ```
 
-### Railway
-
-1. Push to GitHub
-2. Connect the repository to [Railway](https://railway.app)
-3. Add environment variables in the Railway dashboard
-4. Deploy automatically on push
-
 ### Manual
 
 ```bash
