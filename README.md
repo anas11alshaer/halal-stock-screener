@@ -1,19 +1,17 @@
 # Halal Stock Screener
 
-A Telegram bot that checks whether stocks and ETFs are Shariah-compliant (Halal)
-according to Islamic investment principles. The bot cross-references two independent
-sources (Musaffa and Zoya) and applies conservative conflict resolution when they disagree.
+A Telegram bot that checks whether stocks and ETFs are Shariah-compliant (Halal) by cross-referencing two independent screening sources — [Musaffa](https://musaffa.com) and [Zoya](https://zoya.finance). When sources disagree, the bot applies a conservative conflict resolution rule so that uncertain stocks are never silently passed as compliant.
 
 ## Features
 
-- **Dual-Source Verification** — Cross-references Musaffa and Zoya for reliable compliance data
-- **ETF Support** — Authenticates with Musaffa to unlock ETF compliance status
-- **Conservative Conflict Resolution** — When sources disagree the more restrictive status wins
-- **Multiple Input Methods** — Send ticker symbols as text or upload portfolio screenshots
-- **AI Image Analysis** — Extracts tickers from images using Google Gemini
-- **Batch Processing** — Check multiple tickers in a single message
-- **Smart Caching** — 24-hour SQLite cache per source to reduce scraping load
-- **User History** — Track screening history and view statistics per user
+- **Dual-source verification** — Cross-references Musaffa and Zoya for reliable results
+- **ETF support** — Authenticates with Musaffa to unlock ETF compliance data
+- **Conservative conflict resolution** — When sources disagree, the more restrictive status wins
+- **Multiple input methods** — Send ticker symbols as text or upload portfolio screenshots
+- **AI image analysis** — Extracts tickers from screenshots using Google Gemini
+- **Batch processing** — Check multiple tickers in a single message
+- **Smart caching** — 24-hour SQLite cache per source to reduce scraping load
+- **User history** — Track and review your past screening checks
 
 ## Quick Start
 
@@ -22,7 +20,7 @@ sources (Musaffa and Zoya) and applies conservative conflict resolution when the
 - Python 3.11+
 - Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
 - Musaffa account (free — required for ETF compliance data)
-- Google Gemini API Key (optional, for image analysis)
+- Google Gemini API key (optional, for image analysis)
 
 ### Installation
 
@@ -37,11 +35,10 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-playwright install chromium
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your credentials (see Configuration below)
+# Edit .env with your credentials
 
 # Run the bot
 python src/bot.py
@@ -54,15 +51,14 @@ Copy `.env.example` to `.env` and fill in the values:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Bot token from BotFather |
-| `MUSAFFA_EMAIL` | Recommended | — | Musaffa account email — unlocks ETF compliance data |
+| `MUSAFFA_EMAIL` | Recommended | — | Musaffa account email (unlocks ETF data) |
 | `MUSAFFA_PASSWORD` | Recommended | — | Musaffa account password |
 | `GEMINI_API_KEY` | No | — | Google Gemini key for image analysis |
 | `GEMINI_API_KEYS` | No | — | Comma-separated Gemini keys for higher quota |
 | `CACHE_TTL_HOURS` | No | `24` | Cache expiration in hours |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
-> **ETF note:** Without Musaffa credentials, ETF pages return a locked status and the
-> bot will report `Not Covered`. A free Musaffa account is sufficient.
+> **ETF note:** Without Musaffa credentials, ETF pages return a locked status and the bot reports `Not Covered`. A free Musaffa account is sufficient.
 
 ## Usage
 
@@ -81,7 +77,7 @@ Copy `.env.example` to `.env` and fill in the values:
 - Single ticker: `AAPL`
 - With cashtag: `$MSFT`
 - Multiple tickers: `AAPL GOOGL TSLA`
-- Upload an image containing ticker symbols
+- Upload an image or screenshot containing ticker symbols
 
 ## Compliance Statuses
 
@@ -94,7 +90,7 @@ Copy `.env.example` to `.env` and fill in the values:
 
 ### Conflict Resolution
 
-When Musaffa and Zoya return different results the bot picks the most conservative:
+When Musaffa and Zoya return different results, the bot picks the most conservative status:
 
 ```
 Not Halal > Doubtful > Halal > Not Covered
@@ -110,25 +106,25 @@ halal-stock-screener/
 │   ├── resolver.py         # Multi-source conflict resolution
 │   ├── database.py         # SQLite cache, check history, image cache
 │   ├── image_parser.py     # Gemini AI image analysis (multi-key)
-│   ├── config.py           # All configuration & path constants
+│   ├── config.py           # Configuration & path constants
 │   └── scrapers/
-│       ├── base.py         # ComplianceStatus enum, ScreeningResult, helpers
-│       ├── musaffa.py      # Musaffa scraper with login + session reuse
-│       └── zoya.py         # Zoya scraper
+│       ├── base.py         # BaseScraper ABC, ComplianceStatus enum, shared helpers
+│       ├── musaffa.py      # Musaffa scraper (stocks + ETFs, session auth)
+│       └── zoya.py         # Zoya scraper (stocks only)
 ├── tests/
-│   ├── test_scraper.py         # Scraper + resolver integration tests
-│   ├── test_etf_extraction.py  # ETF authenticated extraction diagnostic
-│   └── test_image_parser.py    # Image parser & cache tests
+│   ├── test_scraper.py         # Scraper & resolver integration tests
+│   └── test_image_parser.py    # Image parser unit & cache tests
 ├── data/                   # SQLite DB (auto-created, git-ignored)
 ├── logs/                   # Application logs (auto-created, git-ignored)
 ├── .env.example            # Environment variable template
-├── requirements.txt
-└── Dockerfile
+├── requirements.txt        # Python dependencies
+├── Dockerfile              # Container image definition
+└── CLAUDE.md               # AI development guide
 ```
 
 ## Data Sources
 
-- [Musaffa](https://musaffa.com) — Shariah compliance screening, supports stocks and ETFs
+- [Musaffa](https://musaffa.com) — Shariah compliance screening for stocks and ETFs
 - [Zoya Finance](https://zoya.finance) — Halal investing app, stocks only
 
 ## Deployment
