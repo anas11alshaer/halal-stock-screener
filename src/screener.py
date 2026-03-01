@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from scrapers import MusaffaScraper, ZoyaScraper, ScreeningResult, ComplianceStatus, STATUS_ICON, STATUS_TEXT
+from scrapers import MusaffaScraper, ZoyaScraper, ScreeningResult, ComplianceStatus, STATUS_ICON, STATUS_TEXT, get_quote_type
 from resolver import resolve_compliance
 from image_parser import ImageParser, parse_text_for_tickers, QuotaExceededError
 from database import TickerCache, CheckHistory, ImageCache, init_database
@@ -53,14 +53,18 @@ class ScreenResponse:
     ) -> str:
         """Format a single ticker result with details."""
         icon = STATUS_ICON.get(result.status, "❓")
+        is_etf = result.quote_type == "ETF"
 
         lines = []
 
         # Header with company name
         if result.company_name:
-            lines.append(f"<b>{result.company_name}</b> ({result.ticker})")
+            header = f"<b>{result.company_name}</b> ({result.ticker})"
         else:
-            lines.append(f"<b>{result.ticker}</b>")
+            header = f"<b>{result.ticker}</b>"
+        if is_etf:
+            header += " · ETF"
+        lines.append(header)
 
         lines.append("")
 
@@ -69,17 +73,25 @@ class ScreenResponse:
         lines.append("")
 
         # Source breakdown
-        lines.append("─── Sources ───")
-        if musaffa:
-            m_icon = STATUS_ICON.get(musaffa.status, "❓")
-            lines.append(f"{m_icon} Musaffa: <b>{STATUS_TEXT.get(musaffa.status, 'Unknown')}</b>")
-        if zoya:
-            z_icon = STATUS_ICON.get(zoya.status, "❓")
-            lines.append(f"{z_icon} Zoya: <b>{STATUS_TEXT.get(zoya.status, 'Unknown')}</b>")
+        if is_etf:
+            lines.append("─── Source ───")
+            if musaffa:
+                m_icon = STATUS_ICON.get(musaffa.status, "❓")
+                lines.append(f"{m_icon} Musaffa: <b>{STATUS_TEXT.get(musaffa.status, 'Unknown')}</b>")
+            lines.append("")
+            lines.append("ℹ️ Screened by Musaffa only — Zoya does not cover ETFs")
+        else:
+            lines.append("─── Sources ───")
+            if musaffa:
+                m_icon = STATUS_ICON.get(musaffa.status, "❓")
+                lines.append(f"{m_icon} Musaffa: <b>{STATUS_TEXT.get(musaffa.status, 'Unknown')}</b>")
+            if zoya:
+                z_icon = STATUS_ICON.get(zoya.status, "❓")
+                lines.append(f"{z_icon} Zoya: <b>{STATUS_TEXT.get(zoya.status, 'Unknown')}</b>")
 
-        # Conflict warning
-        if result.details and "Conflict:" in result.details:
-            lines.append(f"\n⚡ Sources disagree — using more restrictive result")
+            # Conflict warning
+            if result.details and "Conflict:" in result.details:
+                lines.append(f"\n⚡ Sources disagree — using more restrictive result")
 
         return "\n".join(lines)
 
@@ -90,24 +102,40 @@ class ScreenResponse:
         for result in self.results:
             icon = STATUS_ICON.get(result.status, "❓")
             status = STATUS_TEXT.get(result.status, "Unknown")
+            is_etf = result.quote_type == "ETF"
 
             # Header line
             if result.company_name:
-                lines.append(f"{icon} <b>{result.ticker}</b> — {result.company_name}")
+                header = f"{icon} <b>{result.ticker}</b>"
+                if is_etf:
+                    header += " · ETF"
+                header += f" — {result.company_name}"
             else:
-                lines.append(f"{icon} <b>{result.ticker}</b> — {status}")
+                header = f"{icon} <b>{result.ticker}</b>"
+                if is_etf:
+                    header += " · ETF"
+                header += f" — {status}"
+            lines.append(header)
 
             # Source details
             sources = self.source_results.get(result.ticker, {})
             musaffa = sources.get("musaffa")
             zoya = sources.get("zoya")
-            parts = []
-            if musaffa:
-                parts.append(f"Musaffa: {STATUS_TEXT.get(musaffa.status, '?')}")
-            if zoya:
-                parts.append(f"Zoya: {STATUS_TEXT.get(zoya.status, '?')}")
-            if parts:
+
+            if is_etf:
+                parts = []
+                if musaffa:
+                    parts.append(f"Musaffa: {STATUS_TEXT.get(musaffa.status, '?')}")
+                parts.append("Zoya: N/A for ETFs")
                 lines.append(f"      {' · '.join(parts)}")
+            else:
+                parts = []
+                if musaffa:
+                    parts.append(f"Musaffa: {STATUS_TEXT.get(musaffa.status, '?')}")
+                if zoya:
+                    parts.append(f"Zoya: {STATUS_TEXT.get(zoya.status, '?')}")
+                if parts:
+                    lines.append(f"      {' · '.join(parts)}")
 
             lines.append("")
 
@@ -263,6 +291,10 @@ class StockScreener:
 
         if conflicts:
             logger.warning(f"Conflicts detected for tickers: {', '.join(conflicts)}")
+
+        # Populate quote_type on final results for display
+        for result in results:
+            result.quote_type = await get_quote_type(result.ticker)
 
         # Build per-ticker source breakdown for display
         source_results = {}

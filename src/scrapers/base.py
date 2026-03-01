@@ -90,6 +90,7 @@ class ScreeningResult:
     company_name: Optional[str] = None
     details: Optional[str] = None
     error_message: Optional[str] = None
+    quote_type: Optional[str] = None
 
 
 class BaseScraper(ABC):
