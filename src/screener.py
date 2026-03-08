@@ -10,6 +10,7 @@ from scrapers import MusaffaScraper, ZoyaScraper, ScreeningResult, ComplianceSta
 from resolver import resolve_compliance
 from image_parser import ImageParser, parse_text_for_tickers, QuotaExceededError
 from database import TickerCache, CheckHistory, ImageCache, init_database
+from config import MAX_TICKERS_PER_REQUEST
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,9 @@ class StockScreener:
     ) -> ScreenResponse:
         """Screen a list of tickers using both Musaffa and Zoya sources.
 
+        Processes tickers in batches of MAX_TICKERS_PER_REQUEST to limit
+        concurrent HTTP requests.
+
         Args:
             tickers: List of ticker symbols to screen
             user_id: Optional user ID for history tracking
@@ -183,6 +187,30 @@ class StockScreener:
         tickers = [t.upper().strip() for t in tickers]
         tickers = list(dict.fromkeys(tickers))  # Remove duplicates, preserve order
 
+        # Process in batches
+        all_results = []
+        all_from_cache = []
+        all_source_results = {}
+
+        for i in range(0, len(tickers), MAX_TICKERS_PER_REQUEST):
+            batch = tickers[i:i + MAX_TICKERS_PER_REQUEST]
+            batch_resp = await self._screen_batch(batch, user_id)
+            all_results.extend(batch_resp.results)
+            all_from_cache.extend(batch_resp.from_cache)
+            all_source_results.update(batch_resp.source_results)
+
+        return ScreenResponse(
+            results=all_results,
+            from_cache=all_from_cache,
+            source_results=all_source_results,
+        )
+
+    async def _screen_batch(
+        self,
+        tickers: list[str],
+        user_id: Optional[int] = None
+    ) -> ScreenResponse:
+        """Screen a single batch of tickers against both sources."""
         results = []
         from_cache = []
         conflicts = []

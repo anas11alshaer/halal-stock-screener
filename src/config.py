@@ -42,6 +42,15 @@ MUSAFFA_BASE_URL = "https://musaffa.com/stock"
 ZOYA_BASE_URL = "https://zoya.finance/stocks"
 REQUEST_TIMEOUT = 30  # seconds
 MAX_RETRIES = 3
+MAX_TICKERS_PER_REQUEST = 25
+
+# Gemini model configuration (ordered by preference: highest RPM first)
+GEMINI_MODELS = [
+    {"name": "gemini-3.1-flash-lite-preview", "rpm": 15, "rpd": 500},
+    {"name": "gemini-2.5-flash-lite", "rpm": 10, "rpd": 500},
+    {"name": "gemini-3-flash-preview", "rpm": 5, "rpd": 25},
+    {"name": "gemini-2.5-flash", "rpm": 5, "rpd": 25},
+]
 
 # Logging configuration
 LOG_FILE = LOGS_DIR / "stock_screener.log"

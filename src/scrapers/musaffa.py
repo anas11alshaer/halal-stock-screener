@@ -60,6 +60,15 @@ class MusaffaScraper(BaseScraper):
                 error_message="Stock not found on Musaffa",
             )
 
+        if response.status_code >= 400:
+            logger.warning(f"HTTP {response.status_code} for {url}")
+            return ScreeningResult(
+                ticker=ticker,
+                status=ComplianceStatus.ERROR,
+                source="musaffa",
+                error_message=f"HTTP {response.status_code}",
+            )
+
         return self._parse_content(ticker, response.text)
 
     def _parse_content(self, ticker: str, page_html: str) -> ScreeningResult:
