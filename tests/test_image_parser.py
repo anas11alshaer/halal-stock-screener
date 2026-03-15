@@ -20,7 +20,6 @@ from image_parser import (
     parse_text_for_tickers,
     QuotaExceededError,
     FALSE_POSITIVE_TICKERS,
-    MIN_REQUEST_INTERVAL,
     MAX_RETRIES,
     INITIAL_BACKOFF,
 )
@@ -270,60 +269,81 @@ class TestParseTextForTickers:
 
 
 @pytest.mark.asyncio
-class TestImageParserRateLimiting:
-    """Test async rate limiting functionality."""
+class TestImageParserDailyRotation:
+    """Test daily model rotation logic."""
 
     @patch('image_parser.genai.Client')
-    def test_rate_limit_uses_asyncio_sleep(self, mock_client):
-        """Test that rate limiting uses asyncio.sleep instead of time.sleep."""
+    def test_counter_resets_on_new_day(self, mock_client):
+        """Test that request counter and exhausted models reset daily."""
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
             parser = ImageParser()
 
-            # First call - no delay
-            start1 = time.time()
-            asyncio.run(parser._rate_limit())
-            duration1 = time.time() - start1
-            assert duration1 < 0.1  # Should be instant
+            # Simulate some usage
+            parser._request_counter = 5
+            parser._exhausted_models.add("gemini-2.5-flash")
+            parser._counter_date = "2025-01-01"  # Old date
 
-            # Second call immediately - should delay
-            start2 = time.time()
-            asyncio.run(parser._rate_limit())
-            duration2 = time.time() - start2
-            assert duration2 >= MIN_REQUEST_INTERVAL - 0.1  # Allow small tolerance
+            model = parser._get_next_model()
+
+            assert parser._request_counter == 1  # Reset to 0 then incremented
+            assert len(parser._exhausted_models) == 0
+            assert model == parser.models[0]  # Starts from first model
 
     @patch('image_parser.genai.Client')
-    def test_rate_limit_lock_prevents_race(self, mock_client):
-        """Test that rate limiting lock prevents race conditions."""
+    def test_round_robin_rotation(self, mock_client):
+        """Test that models rotate round-robin per request."""
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
             parser = ImageParser()
 
-            async def concurrent_calls():
-                tasks = [parser._rate_limit() for _ in range(5)]
-                await asyncio.gather(*tasks)
+            models_picked = []
+            for _ in range(len(parser.models) * 2):
+                model = parser._get_next_model()
+                models_picked.append(model)
 
-            start = time.time()
-            asyncio.run(concurrent_calls())
-            duration = time.time() - start
+            # Should cycle through all models twice
+            assert models_picked[:4] == parser.models
+            assert models_picked[4:8] == parser.models
 
-            # With 5 calls and 1s interval, should take ~4+ seconds
-            assert duration >= 4.0
+    @patch('image_parser.genai.Client')
+    def test_skips_exhausted_models(self, mock_client):
+        """Test that exhausted models are skipped in rotation."""
+        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+            parser = ImageParser()
+
+            # Set today's date so reset doesn't clear exhausted set
+            parser._counter_date = time.strftime("%Y-%m-%d")
+            parser._exhausted_models.add(parser.models[0])
+
+            model = parser._get_next_model()
+            assert model == parser.models[1]
+
+    @patch('image_parser.genai.Client')
+    def test_all_models_exhausted_returns_none(self, mock_client):
+        """Test that None is returned when all models are exhausted."""
+        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+            parser = ImageParser()
+
+            parser._counter_date = time.strftime("%Y-%m-%d")
+            for m in parser.models:
+                parser._exhausted_models.add(m)
+
+            assert parser._get_next_model() is None
 
 
 @pytest.mark.asyncio
 class TestImageParserRetryLogic:
-    """Test retry logic with exponential backoff."""
+    """Test retry and model rotation on errors."""
 
     @patch('image_parser.genai.Client')
-    async def test_retry_on_rate_limit(self, mock_client):
-        """Test that parser retries on rate limit errors."""
+    async def test_quota_error_rotates_to_next_model(self, mock_client):
+        """Test that quota errors mark model exhausted and try next."""
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
             parser = ImageParser()
 
-            # Mock API to fail twice then succeed
+            call_count = 0
             mock_response = MagicMock()
             mock_response.text = '{"tickers": ["AAPL"], "confidence": "high"}'
 
-            call_count = 0
             async def mock_generate(*args, **kwargs):
                 nonlocal call_count
                 call_count += 1
@@ -333,75 +353,71 @@ class TestImageParserRetryLogic:
 
             mock_client.return_value.aio.models.generate_content = mock_generate
 
-            image_data = b"test image"
+            result = await parser.extract_tickers(b"test image")
 
-            start = time.time()
-            result = await parser.extract_tickers(image_data)
-            duration = time.time() - start
-
-            # Should succeed after retries
             assert "AAPL" in result
             assert call_count == 3
-
-            # Should have exponential backoff: 1s + 2s = 3s minimum
-            assert duration >= 3.0
+            # First two models should be marked exhausted
+            assert len(parser._exhausted_models) == 2
 
     @patch('image_parser.genai.Client')
-    async def test_raises_quota_exceeded_after_max_retries(self, mock_client):
-        """Test that QuotaExceededError is raised after max retries."""
+    async def test_all_models_exhausted_raises_quota_exceeded(self, mock_client):
+        """Test that QuotaExceededError is raised when all models hit quota."""
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
             parser = ImageParser()
 
-            # Mock API to always fail
             async def mock_generate(*args, **kwargs):
                 raise Exception("429 Rate limit exceeded")
 
             mock_client.return_value.aio.models.generate_content = mock_generate
 
-            image_data = b"test image"
-
             with pytest.raises(QuotaExceededError):
-                await parser.extract_tickers(image_data)
+                await parser.extract_tickers(b"test image")
+
+            assert len(parser._exhausted_models) == len(parser.models)
 
     @patch('image_parser.genai.Client')
-    async def test_exponential_backoff_timing(self, mock_client):
-        """Test that backoff increases exponentially."""
+    async def test_non_quota_error_retries_with_backoff(self, mock_client):
+        """Test that non-quota errors retry with exponential backoff on same model."""
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
             parser = ImageParser()
 
-            # Mock to fail MAX_RETRIES times
+            call_count = 0
+            mock_response = MagicMock()
+            mock_response.text = '{"tickers": ["MSFT"], "confidence": "high"}'
+
             async def mock_generate(*args, **kwargs):
-                raise Exception("quota exceeded")
+                nonlocal call_count
+                call_count += 1
+                if call_count < 3:
+                    raise Exception("Some server error")
+                return mock_response
 
             mock_client.return_value.aio.models.generate_content = mock_generate
 
-            image_data = b"test image"
-
             start = time.time()
-            try:
-                await parser.extract_tickers(image_data)
-            except QuotaExceededError:
-                pass
+            result = await parser.extract_tickers(b"test image")
             duration = time.time() - start
 
-            # Expected: First call fails, then retry with 1s backoff, then retry with 2s backoff
-            # Total: 1s + 2s = 3s minimum for backoffs
+            assert "MSFT" in result
+            assert call_count == 3
+            # Backoff: 1s + 2s = 3s minimum
             assert duration >= 3.0
+            # No models should be marked exhausted (not a quota error)
+            assert len(parser._exhausted_models) == 0
 
     @patch('image_parser.genai.Client')
-    async def test_non_rate_limit_error_returns_empty(self, mock_client):
-        """Test that non-rate-limit errors return empty list."""
+    async def test_non_quota_error_returns_empty_after_max_retries(self, mock_client):
+        """Test that persistent non-quota errors return empty list."""
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
             parser = ImageParser()
 
-            # Mock API with non-rate-limit error
             async def mock_generate(*args, **kwargs):
                 raise Exception("Some other error")
 
             mock_client.return_value.aio.models.generate_content = mock_generate
 
-            image_data = b"test image"
-            result = await parser.extract_tickers(image_data)
+            result = await parser.extract_tickers(b"test image")
 
             assert result == []
 

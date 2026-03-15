@@ -50,8 +50,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Bot token from BotFather |
-| `GEMINI_API_KEY` | No | — | Google Gemini key for image analysis |
-| `GEMINI_API_KEYS` | No | — | Comma-separated Gemini keys for higher quota |
+| `GEMINI_API_KEY` | No | — | Google Gemini key for image analysis (rotates across 4 models daily) |
 | `CACHE_TTL_HOURS` | No | `24` | Cache expiration in hours |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 

@@ -86,8 +86,7 @@ Environment variables loaded from `.env` via python-dotenv:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Bot token from BotFather |
-| `GEMINI_API_KEY` | No | — | Single Gemini key for image analysis |
-| `GEMINI_API_KEYS` | No | — | Comma-separated keys for higher quota |
+| `GEMINI_API_KEY` | No | — | Gemini key for image analysis (rotates across 4 models daily) |
 | `CACHE_TTL_HOURS` | No | `24` | Cache expiration in hours |
 | `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
@@ -305,6 +304,6 @@ Do not create new top-level files unless a completely new module is warranted.
 
 ### Image Parser (`image_parser.py`)
 - Model: `gemini-2.5-flash-lite`
-- Multi-key rotation with per-key 5-minute cooldown on quota errors
+- Daily model rotation: cycles through 4 models per request, resets each day
 - SHA-256 image hashing with 24-hour SQLite cache
 - Exponential backoff: 3 retries (1s, 2s, 4s delays)

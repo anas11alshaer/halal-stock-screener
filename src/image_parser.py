@@ -11,7 +11,7 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEYS, GEMINI_MODELS
+from config import GEMINI_API_KEY, GEMINI_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -110,109 +110,57 @@ class QuotaExceededError(Exception):
     pass
 
 
-class _ModelSlot:
-    """Tracks rate limit usage for a single (API key, model) pair."""
-
-    def __init__(self, client: genai.Client, key_index: int, model_name: str, rpm: int, rpd: int):
-        self.client = client
-        self.key_index = key_index
-        self.model_name = model_name
-        self.rpm = rpm
-        self.rpd = rpd
-        self._minute_timestamps: list[float] = []
-        self._day_count = 0
-        self._day_date: str = ""  # YYYY-MM-DD string for current day
-        self._cooldown_until: float = 0  # timestamp when cooldown ends
-
-    def _current_day(self) -> str:
-        return time.strftime("%Y-%m-%d")
-
-    def is_available(self) -> bool:
-        now = time.time()
-        if now < self._cooldown_until:
-            return False
-        # Reset daily counter if new day
-        today = self._current_day()
-        if self._day_date != today:
-            self._day_date = today
-            self._day_count = 0
-        if self._day_count >= self.rpd:
-            return False
-        # Prune old timestamps and check RPM
-        cutoff = now - 60
-        self._minute_timestamps = [t for t in self._minute_timestamps if t > cutoff]
-        if len(self._minute_timestamps) >= self.rpm:
-            return False
-        return True
-
-    def record_usage(self):
-        now = time.time()
-        self._minute_timestamps.append(now)
-        today = self._current_day()
-        if self._day_date != today:
-            self._day_date = today
-            self._day_count = 0
-        self._day_count += 1
-
-    def set_cooldown(self, seconds: float):
-        self._cooldown_until = time.time() + seconds
-        logger.warning(
-            f"Slot key={self.key_index + 1} model={self.model_name} "
-            f"in cooldown for {seconds}s"
-        )
-
-    def seconds_until_available(self) -> float:
-        now = time.time()
-        waits = []
-        # Cooldown wait
-        if now < self._cooldown_until:
-            waits.append(self._cooldown_until - now)
-        # RPM wait — time until oldest request in the window expires
-        cutoff = now - 60
-        active = [t for t in self._minute_timestamps if t > cutoff]
-        if len(active) >= self.rpm and active:
-            waits.append(active[0] + 60 - now)
-        # RPD exhausted — wait until midnight (long wait)
-        today = self._current_day()
-        if self._day_date == today and self._day_count >= self.rpd:
-            waits.append(3600)  # placeholder, effectively unavailable
-        return max(waits) if waits else 0
-
-    def __repr__(self):
-        return f"Slot(key={self.key_index + 1}, model={self.model_name}, rpm={self.rpm}, rpd={self.rpd})"
-
-
 class ImageParser:
-    """Parse images to extract stock tickers using Gemini with multi-model, multi-key rotation."""
+    """Parse images to extract stock tickers using Gemini with daily model rotation."""
 
     def __init__(self, image_cache=None):
-        if not GEMINI_API_KEYS:
-            raise ValueError("No Gemini API keys configured. Set GEMINI_API_KEYS or GEMINI_API_KEY.")
+        if not GEMINI_API_KEY:
+            raise ValueError("No Gemini API key configured. Set GEMINI_API_KEY.")
 
-        # Build slots: one per (key, model) pair, ordered by model preference
-        self.slots: list[_ModelSlot] = []
-        clients = [genai.Client(api_key=key) for key in GEMINI_API_KEYS]
-        for model_cfg in GEMINI_MODELS:
-            for key_idx, client in enumerate(clients):
-                self.slots.append(_ModelSlot(
-                    client=client,
-                    key_index=key_idx,
-                    model_name=model_cfg["name"],
-                    rpm=model_cfg["rpm"],
-                    rpd=model_cfg["rpd"],
-                ))
-
+        self.client = genai.Client(api_key=GEMINI_API_KEY)
+        self.models = list(GEMINI_MODELS)
         self.image_cache = image_cache
+
+        # Daily rotation state
+        self._request_counter = 0
+        self._counter_date = ""
+        self._exhausted_models: set[str] = set()
+
         logger.info(
-            f"ImageParser initialized with {len(clients)} API key(s), "
-            f"{len(GEMINI_MODELS)} models, {len(self.slots)} total slots"
+            f"ImageParser initialized with {len(self.models)} models (daily rotation)"
         )
 
-    def _get_available_slot(self) -> _ModelSlot | None:
-        """Get the best available slot (first available in preference order)."""
-        for slot in self.slots:
-            if slot.is_available():
-                return slot
+    def _reset_if_new_day(self):
+        """Reset counter and exhausted models at the start of each new day."""
+        today = time.strftime("%Y-%m-%d")
+        if self._counter_date != today:
+            self._counter_date = today
+            self._request_counter = 0
+            self._exhausted_models.clear()
+            logger.info(f"Daily model rotation reset for {today}")
+
+    def _get_next_model(self) -> str | None:
+        """Get the next model in the rotation, skipping exhausted ones."""
+        self._reset_if_new_day()
+
+        if len(self._exhausted_models) >= len(self.models):
+            return None
+
+        base_index = self._request_counter % len(self.models)
+        self._request_counter += 1
+
+        for i in range(len(self.models)):
+            index = (base_index + i) % len(self.models)
+            if self.models[index] not in self._exhausted_models:
+                return self.models[index]
+
+        return None
+
+    def _find_available_model(self) -> str | None:
+        """Find any non-exhausted model as a fallback."""
+        for model in self.models:
+            if model not in self._exhausted_models:
+                return model
         return None
 
     @staticmethod
@@ -221,14 +169,14 @@ class ImageParser:
         return hashlib.sha256(image_data).hexdigest()[:32]
 
     async def extract_tickers(self, image_data: bytes) -> list[str]:
-        """Extract stock tickers from an image, rotating across models and keys.
+        """Extract stock tickers from an image using daily model rotation.
 
-        Tries slots in preference order (highest RPM models first). On rate
-        limit errors, marks the slot and moves to the next. If all slots are
-        busy but some will free up soon, waits for the shortest cooldown.
+        Cycles through models round-robin per request (strongest first).
+        Counter resets each new day. If a model hits quota, it's marked
+        exhausted and the next available model is used.
 
         Raises:
-            QuotaExceededError: If all slots are exhausted
+            QuotaExceededError: If all models are exhausted for the day
         """
         # Check cache first
         image_hash = self.compute_image_hash(image_data)
@@ -261,40 +209,21 @@ If no tickers are found, return:
 Only include actual stock ticker symbols, not random text or abbreviations.
 Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AAPL.US")."""
 
-        slots_tried = set()
-        last_exception = None
+        model = self._get_next_model()
+        if model is None:
+            raise QuotaExceededError("All models exhausted for today. Try again tomorrow.")
 
-        while len(slots_tried) < len(self.slots):
-            slot = self._get_available_slot()
-
-            if slot is None:
-                # All slots busy — find the shortest wait
-                min_wait = min(s.seconds_until_available() for s in self.slots)
-                if min_wait > 300:
-                    raise QuotaExceededError(
-                        "All model slots exhausted. Please try again later."
-                    )
-                logger.info(f"All slots busy, waiting {min_wait:.1f}s for next available")
-                await asyncio.sleep(min_wait + 0.1)
-                continue
-
-            slot_id = id(slot)
-            if slot_id in slots_tried:
-                # Already failed on this slot, skip
-                continue
-
-            logger.info(f"Using {slot}")
+        while model is not None:
+            logger.info(f"Using model: {model}")
 
             for attempt in range(MAX_RETRIES):
                 try:
-                    slot.record_usage()
-
                     image_part = types.Part.from_bytes(
                         data=image_data, mime_type="image/jpeg"
                     )
 
-                    response = await slot.client.aio.models.generate_content(
-                        model=slot.model_name,
+                    response = await self.client.aio.models.generate_content(
+                        model=model,
                         contents=[prompt, image_part],
                         config=types.GenerateContentConfig(
                             temperature=0.1,
@@ -304,7 +233,7 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
 
                     response_text = response.text if response.text else ""
                     logger.info(
-                        f"Gemini response from {slot.model_name} "
+                        f"Gemini response from {model} "
                         f"({len(response_text)} chars): {response_text[:200]}..."
                     )
 
@@ -321,9 +250,6 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
 
                 except Exception as e:
                     error_str = str(e).lower()
-                    logger.error(
-                        f"Gemini error ({slot}, attempt {attempt + 1}): {e}"
-                    )
 
                     is_quota_error = any(x in error_str for x in [
                         "429", "quota", "rate limit", "resource exhausted",
@@ -331,23 +257,24 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                     ])
 
                     if is_quota_error:
-                        last_exception = e
-                        is_daily = "daily" in error_str or "per day" in error_str
-                        slot.set_cooldown(3600 if is_daily else 60)
-                        slots_tried.add(slot_id)
-                        break  # Try next slot
+                        logger.warning(f"Model {model} quota hit, marking exhausted")
+                        self._exhausted_models.add(model)
+                        break  # Break retry loop, try next model
 
-                    # Non-quota error — don't retry
+                    # Non-quota error — retry with backoff
+                    logger.error(
+                        f"Gemini error ({model}, attempt {attempt + 1}/{MAX_RETRIES}): {e}"
+                    )
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(INITIAL_BACKOFF * (2 ** attempt))
+                        continue
                     logger.error(f"Error extracting tickers: {e}")
                     return []
 
-            slots_tried.add(slot_id)
+            # Current model exhausted, find next available
+            model = self._find_available_model()
 
-        if last_exception:
-            raise QuotaExceededError(
-                f"All {len(self.slots)} model slots exhausted. Please try again later."
-            )
-        return []
+        raise QuotaExceededError("All models exhausted for today. Try again tomorrow.")
 
     def _parse_response(self, response_text: str) -> list[str]:
         """Parse the Gemini response to extract tickers."""
