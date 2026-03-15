@@ -71,21 +71,24 @@ class TestImageCache:
     @pytest.fixture(autouse=True)
     def setup_database(self):
         """Initialize clean database for each test."""
-        # Use unique in-memory database for each test
         import config
+        import database
         import tempfile
-        original_path = config.DATABASE_PATH
+        original_config_path = config.DATABASE_PATH
+        original_db_path = database.DATABASE_PATH
 
         # Create a temporary database file
         temp_db = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
         config.DATABASE_PATH = temp_db.name
+        database.DATABASE_PATH = temp_db.name
         temp_db.close()
 
         init_database()
         yield
 
         # Clean up
-        config.DATABASE_PATH = original_path
+        config.DATABASE_PATH = original_config_path
+        database.DATABASE_PATH = original_db_path
         import os
         try:
             os.unlink(temp_db.name)
@@ -430,19 +433,23 @@ class TestImageParserCacheIntegration:
     def setup_database(self):
         """Initialize clean database for each test."""
         import config
+        import database
         import tempfile
-        original_path = config.DATABASE_PATH
+        original_config_path = config.DATABASE_PATH
+        original_db_path = database.DATABASE_PATH
 
         # Create a temporary database file
         temp_db = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
         config.DATABASE_PATH = temp_db.name
+        database.DATABASE_PATH = temp_db.name
         temp_db.close()
 
         init_database()
         yield
 
         # Clean up
-        config.DATABASE_PATH = original_path
+        config.DATABASE_PATH = original_config_path
+        database.DATABASE_PATH = original_db_path
         import os
         try:
             os.unlink(temp_db.name)
