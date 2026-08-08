@@ -128,7 +128,7 @@ def resolve_compliance(
         status=more_restrictive,
         source="combined",
         compliance_ranking=musaffa.compliance_ranking if winning_source == "musaffa" else None,
-        company_name=musaffa.company_name if winning_source == "musaffa" else None,
+        company_name=musaffa.company_name or zoya.company_name,
         details=f"Conflict: Musaffa={STATUS_TEXT[musaffa_status]}, Zoya={STATUS_TEXT[zoya_status]}"
     )
 
