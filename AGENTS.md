@@ -16,11 +16,13 @@ Authoritative project orientation also lives in `CLAUDE.md`. Prefer this file fo
 - Orchestration: `src/screener.py` → `src/resolver.py` → `src/database.py`
 - Config: `src/config.py` only (no `os.environ` in feature modules except known legacy `PORT` in `bot.py`)
 
-## Branches & testing
+## Branches & testing (GitHub Flow)
 
-- Dev: `development/D0.02.00` · Release: `release/R0.02.00`
-- **Do not run pytest on feature/bugfix branches** — release branch only
-- After meaningful changes on release: `venv\Scripts\activate; pytest tests/ -x`
+- Default: `master` — protected, releasable (CI green). Never commit product work directly on `master`.
+- Every change via short-lived branch + PR → delete after merge. There is no `develop`.
+- Prefixes: `feature/<issue>-<slug>` · `fix/<issue>-<slug>` · `refactor/<issue>-<slug>` · `docs/<slug>` · `chore/deps-<name>` · `hotfix/<version>-<slug>` · `spike/<slug>` · `release/x.y` only if maintaining old line.
+- Tags: `vX.Y.Z` SemVer on shipped commit (`git tag -a v1.2.0 -m "v1.2.0" && git push origin v1.2.0`).
+- Tests: run `venv\Scripts\activate; pytest tests/ -x` locally on any branch before push; CI runs on PR to `master`.
 
 ## Agent rules of engagement
 
@@ -29,7 +31,7 @@ Authoritative project orientation also lives in `CLAUDE.md`. Prefer this file fo
 3. **ComplianceStatus enum** — never raw status strings in logic; display via `STATUS_ICON` / `STATUS_TEXT`.
 4. **DB only via `database.py`**; new config → `config.py` + `.env.example`.
 5. **Never commit `.env`**, never log tokens/keys/PII.
-6. **New scraper checklist**: subclass `BaseScraper` → export in `scrapers/__init__.py` → register in `screener.py` → resolver weighting if needed → tests on release.
+6. **New scraper checklist**: subclass `BaseScraper` → export in `scrapers/__init__.py` → register in `screener.py` → resolver weighting if needed → tests via PR to `master`.
 
 ## Known screening correctness risks (audit focus)
 

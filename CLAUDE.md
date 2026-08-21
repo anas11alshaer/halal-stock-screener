@@ -7,7 +7,7 @@ A Telegram bot that checks whether stocks are Shariah-compliant by scraping mult
 - `project_tier`: production
 - `docs_tier`: light
 - `git_tier`: disciplined
-- `testing_tier`: release-only
+- `testing_tier`: pr
 - `logging_tier`: app-logs
 - `code_doc_tier`: full
 
@@ -43,7 +43,7 @@ source venv/Scripts/activate && python src/bot.py
 ```
 source venv/Scripts/activate && pytest tests/
 ```
-Run on release branch only.
+CI runs on PR to `master` — run locally on any branch before push. No long-lived `develop`/`release` branches.
 
 ## Verification
 
@@ -100,7 +100,7 @@ stock_screener/
 ## Guardrails
 
 - Security: never log credentials, API keys, session tokens, or PII. Validate user input in `bot.py` before passing to screener. Never commit `.env`. No new external HTTP calls outside the scrapers package without approval.
-- Tests run on `release/R0.02.00` only — do not run pytest on feature/bugfix branches.
+- GitHub Flow: `master` is protected/releasable (CI green). Never commit product work directly on `master` — every change via short-lived branch + PR, delete branch after merge. There is no `develop`.
 
 ## Corrections
 
@@ -115,10 +115,12 @@ stock_screener/
 
 ---
 
-## Current Branch *(git_tier: disciplined)*
+## Git Workflow *(git_tier: disciplined — GitHub Flow)*
 
-- Development branch: `development/D0.02.00`
-- Release branch: `release/R0.02.00`
+- Default branch: `master` — protected, releasable, CI green. Never commit directly.
+- Branch prefixes: `feature/<issue>-<slug>` · `fix/<issue>-<slug>` · `refactor/<issue>-<slug>` · `docs/<slug>` · `chore/deps-<name>` · `hotfix/<version>-<slug>` · `spike/<slug>` · `release/x.y` (only if maintaining old `vX.Y` line in field).
+- Tags: `vX.Y.Z` SemVer — MAJOR breaking, MINOR compatible feature, PATCH bugfix. Tag only on shipped commit (`git tag -a v1.2.0 -m "v1.2.0" && git push origin v1.2.0 && gh release create v1.2.0 ...`). Hotfix from tag: `git switch -c hotfix/1.2.1-slug v1.2.0`.
+- No `develop`. `release/x.y` only when old line needs patches while `master` has moved.
 
 ## Logs Location *(logging_tier: app-logs)*
 
