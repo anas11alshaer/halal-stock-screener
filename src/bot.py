@@ -63,7 +63,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     welcome_message = """<b>Halal Stock Screener</b>
 
-Check if stocks are Shariah-compliant using Musaffa.com data.
+Check if stocks and ETFs are Shariah-compliant using Musaffa and Zoya.
+When sources disagree, the more restrictive result is used.
 
 <b>Usage</b>
 Send ticker symbols: <code>AAPL</code> <code>MSFT</code> <code>GOOGL</code>

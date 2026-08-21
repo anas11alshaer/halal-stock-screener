@@ -78,9 +78,8 @@ class ZoyaScraper(BaseScraper):
     def _parse_content(self, ticker: str, page_html: str) -> ScreeningResult:
         """Parse page content to extract compliance info.
 
-        Primary strategy: extract the FAQ JSON-LD structured data which
-        contains the definitive compliance verdict without template noise.
-        Fallback: parse the main H2 heading.
+        Prefer the main H2 verdict. Zoya FAQ JSON-LD embeds contradictory
+        A/B template answers, so it is only a fallback.
         """
         ticker = ticker.upper()
 
@@ -92,25 +91,31 @@ class ZoyaScraper(BaseScraper):
                 error_message="Stock not found on Zoya",
             )
 
-        # Strategy 1: Parse JSON-LD FAQ structured data
-        status = self._parse_jsonld(ticker, page_html)
-        if status is not None:
-            return ScreeningResult(ticker=ticker, status=status, source="zoya")
-
-        # Strategy 2: Parse the main H2 heading
-        # e.g. <h2>AAPL stock is <a ...>Shariah-compliant</a></h2>
-        # or   <h2>BAC stock is not <a ...>Shariah-compliant</a></h2>
+        # Strategy 1: main H2 heading (authoritative visible verdict)
+        # e.g. "AAPL stock is Shariah-compliant"
+        #      "JPM stock is not Shariah-compliant"
+        #      "MSFT stock is questionable"
+        page_lower = page_html.lower()
         h2_match = re.search(
-            rf'{ticker.lower()}\s+stock\s+is\s+(not\s+)?.*?shariah-compliant',
-            page_html.lower(),
+            rf'{ticker.lower()}\s+stock\s+is\s+'
+            rf'(not\s+)?(?:<[^>]+>\s*)*(shariah-compliant|questionable|doubtful)',
+            page_lower,
         )
         if h2_match:
-            if h2_match.group(1):  # "not" was captured
+            if h2_match.group(2) in ("questionable", "doubtful"):
+                status = ComplianceStatus.DOUBTFUL
+                logger.info(f"{ticker}: DOUBTFUL (zoya, h2)")
+            elif h2_match.group(1):  # "not" was captured
                 status = ComplianceStatus.NOT_HALAL
                 logger.info(f"{ticker}: NOT_HALAL (zoya, h2)")
             else:
                 status = ComplianceStatus.HALAL
                 logger.info(f"{ticker}: HALAL (zoya, h2)")
+            return ScreeningResult(ticker=ticker, status=status, source="zoya")
+
+        # Strategy 2: JSON-LD FAQ (noisy — may contain template variants)
+        status = self._parse_jsonld(ticker, page_html)
+        if status is not None:
             return ScreeningResult(ticker=ticker, status=status, source="zoya")
 
         logger.warning(f"{ticker}: Could not determine status (zoya)")
@@ -121,7 +126,13 @@ class ZoyaScraper(BaseScraper):
         )
 
     def _parse_jsonld(self, ticker: str, page_html: str) -> ComplianceStatus | None:
-        """Extract compliance status from JSON-LD FAQPage data."""
+        """Extract compliance status from JSON-LD FAQPage data.
+
+        Only accepts an answer when it yields a single unambiguous verdict
+        across entities that mention compliance.
+        """
+        verdicts: set[ComplianceStatus] = set()
+
         for match in re.finditer(
             r'<script\s+type="application/ld\+json"[^>]*>(.*?)</script>',
             page_html,
@@ -139,11 +150,25 @@ class ZoyaScraper(BaseScraper):
                 answer_text = (
                     entity.get("acceptedAnswer", {}).get("text", "").lower()
                 )
+                if not answer_text:
+                    continue
+                if "questionable" in answer_text or "flagged as" in answer_text:
+                    # "flagged as" templates are ambiguous; skip
+                    if "questionable" in answer_text:
+                        verdicts.add(ComplianceStatus.DOUBTFUL)
+                    continue
                 if "not shariah-compliant" in answer_text:
-                    logger.info(f"{ticker}: NOT_HALAL (zoya, json-ld)")
-                    return ComplianceStatus.NOT_HALAL
+                    verdicts.add(ComplianceStatus.NOT_HALAL)
                 elif "shariah-compliant" in answer_text:
-                    logger.info(f"{ticker}: HALAL (zoya, json-ld)")
-                    return ComplianceStatus.HALAL
+                    verdicts.add(ComplianceStatus.HALAL)
 
+        if len(verdicts) == 1:
+            status = next(iter(verdicts))
+            logger.info(f"{ticker}: {status.value} (zoya, json-ld)")
+            return status
+
+        if len(verdicts) > 1:
+            logger.warning(
+                f"{ticker}: Ambiguous JSON-LD verdicts {verdicts} (zoya); ignoring"
+            )
         return None

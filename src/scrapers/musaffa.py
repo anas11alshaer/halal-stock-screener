@@ -74,61 +74,23 @@ class MusaffaScraper(BaseScraper):
     def _parse_content(self, ticker: str, page_html: str) -> ScreeningResult:
         """Parse page content to extract compliance info.
 
-        Primary strategy: extract status from the meta description tag,
-        which is server-side rendered and contains the compliance verdict
-        even though the page body is client-side rendered (Angular).
+        Musaffa meta descriptions are SEO questions ("Is X halal?") and no longer
+        contain the verdict. Prefer the SSR status chip / FAQ "classified as …"
+        phrasing in the page body.
         """
         ticker = ticker.upper()
+        page_lower = page_html.lower()
 
-        status = ComplianceStatus.NOT_COVERED
-        company_name = None
-
-        # Extract meta description — this is SSR and always contains the verdict
-        meta_match = re.search(
-            r'<meta\s+name="description"\s+content="([^"]*)"',
-            page_html,
-            re.IGNORECASE,
-        )
-        if meta_match:
-            meta_raw = html.unescape(meta_match.group(1))
-            meta = meta_raw.lower()
-
-            # Extract company name from meta (e.g. "Johnson & Johnson - JNJ is considered")
-            name_match = re.search(
-                rf'(.+?)\s*-\s*{ticker.lower()}\s+is\s+considered',
-                meta,
+        if "page not found" in page_lower or "does not exist" in page_lower:
+            return ScreeningResult(
+                ticker=ticker,
+                status=ComplianceStatus.NOT_COVERED,
+                source="musaffa",
+                error_message="Stock not found on Musaffa",
             )
-            if name_match:
-                # Clean up: remove leading date/report prefix
-                raw_name = name_match.group(1).strip()
-                # Remove "last updated: DD Month YYYY. " prefix
-                raw_name = re.sub(r'^last updated:.*?\.\s*', '', raw_name)
-                # Remove "as of ... report, " prefix
-                raw_name = re.sub(r'^as of.*?,\s*', '', raw_name)
-                company_name = raw_name.strip().title()
 
-            if "not halal" in meta or "not shariah compliant" in meta:
-                status = ComplianceStatus.NOT_HALAL
-                logger.info(f"{ticker}: NOT_HALAL (musaffa)")
-            elif "doubtful" in meta:
-                status = ComplianceStatus.DOUBTFUL
-                logger.info(f"{ticker}: DOUBTFUL (musaffa)")
-            elif "halal" in meta or "shariah compliant" in meta:
-                status = ComplianceStatus.HALAL
-                logger.info(f"{ticker}: HALAL (musaffa)")
-            else:
-                logger.warning(f"{ticker}: Could not determine status from meta (musaffa)")
-        else:
-            # No meta description found — check for 404-like pages
-            page_lower = page_html.lower()
-            if "page not found" in page_lower or "does not exist" in page_lower:
-                return ScreeningResult(
-                    ticker=ticker,
-                    status=ComplianceStatus.NOT_COVERED,
-                    source="musaffa",
-                    error_message="Stock not found on Musaffa",
-                )
-            logger.warning(f"{ticker}: No meta description found (musaffa)")
+        company_name = self._extract_company_name(ticker, page_html)
+        status = self._extract_status(ticker, page_html)
 
         return ScreeningResult(
             ticker=ticker,
@@ -136,3 +98,104 @@ class MusaffaScraper(BaseScraper):
             source="musaffa",
             company_name=company_name,
         )
+
+    def _extract_company_name(self, ticker: str, page_html: str) -> str | None:
+        """Best-effort company/ETF name from meta or title."""
+        meta_match = re.search(
+            r'<meta\s+name="description"\s+content="([^"]*)"',
+            page_html,
+            re.IGNORECASE,
+        )
+        if meta_match:
+            meta_raw = html.unescape(meta_match.group(1))
+            # Current SEO form: "Is Apple Inc halal? Check the Shariah…"
+            name_match = re.search(
+                rf'^Is\s+(.+?)\s+halal\?',
+                meta_raw,
+                re.IGNORECASE,
+            )
+            if name_match:
+                return name_match.group(1).strip()
+
+            # Legacy form: "Company - TICKER is considered…"
+            legacy = re.search(
+                rf'(.+?)\s*-\s*{ticker}\s+is\s+considered',
+                meta_raw,
+                re.IGNORECASE,
+            )
+            if legacy:
+                raw_name = legacy.group(1).strip()
+                raw_name = re.sub(r'^last updated:.*?\.\s*', '', raw_name, flags=re.I)
+                raw_name = re.sub(r'^as of.*?,\s*', '', raw_name, flags=re.I)
+                return raw_name.strip().title()
+
+        title_match = re.search(r'<title>([^<]+)</title>', page_html, re.IGNORECASE)
+        if title_match:
+            title = html.unescape(title_match.group(1))
+            # "Is Apple Inc Halal? AAPL Shariah Compliance Analysis"
+            m = re.search(rf'^Is\s+(.+?)\s+Halal\?', title, re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+
+        return None
+
+    def _extract_status(self, ticker: str, page_html: str) -> ComplianceStatus:
+        """Extract compliance verdict from page body (not SEO meta)."""
+        # 1) Visible status chip: <div class="… status-text">HALAL</div>
+        chip = re.search(
+            r'class="[^"]*status-text[^"]*"[^>]*>\s*(NOT\s*HALAL|DOUBTFUL|HALAL)\s*<',
+            page_html,
+            re.IGNORECASE,
+        )
+        if chip:
+            return self._status_from_label(ticker, chip.group(1), "status-text")
+
+        # 2) FAQ / SSR copy: "classified as not halal" / "classified as halal"
+        # Check not-halal / doubtful before bare halal.
+        classified = re.search(
+            r'classified as\s+(?:<[^>]+>\s*)*(not\s+halal|doubtful|halal)',
+            page_html,
+            re.IGNORECASE,
+        )
+        if classified:
+            return self._status_from_label(ticker, classified.group(1), "classified-as")
+
+        # 3) Legacy meta description (verdict embedded) — last resort
+        meta_match = re.search(
+            r'<meta\s+name="description"\s+content="([^"]*)"',
+            page_html,
+            re.IGNORECASE,
+        )
+        if meta_match:
+            meta = html.unescape(meta_match.group(1)).lower()
+            # Ignore SEO questions like "is x halal?" — they always contain "halal"
+            if re.search(r'\bis\s+.+\s+halal\?', meta) and "classified as" not in meta:
+                logger.warning(
+                    f"{ticker}: Meta is SEO-only; no verdict found in body (musaffa)"
+                )
+            elif "not halal" in meta or "not shariah compliant" in meta:
+                return self._status_from_label(ticker, "nothalal", "meta")
+            elif "doubtful" in meta:
+                return self._status_from_label(ticker, "doubtful", "meta")
+            elif re.search(r'\bis considered (?:halal|shariah compliant)', meta):
+                return self._status_from_label(ticker, "halal", "meta")
+
+        logger.warning(f"{ticker}: Could not determine status (musaffa)")
+        return ComplianceStatus.NOT_COVERED
+
+    def _status_from_label(
+        self, ticker: str, label: str, via: str
+    ) -> ComplianceStatus:
+        normalized = re.sub(r'[\s_]+', '', label.strip().lower())
+        if normalized == "nothalal":
+            status = ComplianceStatus.NOT_HALAL
+        elif normalized == "doubtful":
+            status = ComplianceStatus.DOUBTFUL
+        elif normalized == "halal":
+            status = ComplianceStatus.HALAL
+        else:
+            logger.warning(f"{ticker}: Unknown status label {label!r} (musaffa/{via})")
+            return ComplianceStatus.NOT_COVERED
+
+        logger.info(f"{ticker}: {status.value} (musaffa, {via})")
+        return status
