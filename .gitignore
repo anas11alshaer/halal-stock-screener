@@ -56,8 +56,8 @@ temp/
 deploy.bat
 deploy.sh
 
-# Documentation
-docs/
+# Documentation (old vault, now tracked via docs/adr)
+# docs/  — keep tracked, remove this line after migration
 
 # Claude Code local files (agents, settings)
 .claude/
