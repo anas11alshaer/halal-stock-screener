@@ -59,8 +59,7 @@ class YahooSecurityResolver:
             exact = [
                 candidate
                 for candidate in candidates
-                if self._symbol_key(candidate.yahoo_symbol or candidate.symbol)
-                == query_key
+                if self._symbol_key(candidate.yahoo_symbol or candidate.symbol) == query_key
             ]
             if len(exact) == 1:
                 security = exact[0]

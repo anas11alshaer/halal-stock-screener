@@ -3,6 +3,7 @@
 import httpx
 
 from config import HALAL_TERMINAL_API_KEY, HALAL_TERMINAL_BASE_URL
+
 from .base import (
     AssetType,
     BaseScraper,
@@ -14,17 +15,13 @@ from .base import (
 
 
 class HalalTerminalProvider(BaseScraper):
-    supported_asset_types = frozenset(
-        {AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN}
-    )
+    supported_asset_types = frozenset({AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN})
 
     @property
     def source_name(self) -> str:
         return "halal_terminal"
 
-    async def _fetch_single(
-        self, client: httpx.AsyncClient, security: Security
-    ) -> ScreeningResult:
+    async def _fetch_single(self, client: httpx.AsyncClient, security: Security) -> ScreeningResult:
         if not HALAL_TERMINAL_API_KEY:
             return self.failure(
                 security,

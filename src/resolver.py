@@ -18,14 +18,10 @@ def resolve_compliance(
 
     confirmed = [result for result in results if result.is_confirmed]
     ticker = results[0].ticker
-    company_name = next(
-        (result.company_name for result in results if result.company_name), None
-    )
+    company_name = next((result.company_name for result in results if result.company_name), None)
 
     if not confirmed:
-        not_covered = all(
-            result.status == ComplianceStatus.NOT_COVERED for result in results
-        )
+        not_covered = all(result.status == ComplianceStatus.NOT_COVERED for result in results)
         status = ComplianceStatus.NOT_COVERED if not_covered else ComplianceStatus.ERROR
         return (
             ScreeningResult(
@@ -46,9 +42,7 @@ def resolve_compliance(
     final_status = ComplianceStatus.NOT_HALAL if tied else winners[0]
     provisional = len(confirmed) == 1
 
-    details = ", ".join(
-        f"{result.source}={result.status.value}" for result in confirmed
-    )
+    details = ", ".join(f"{result.source}={result.status.value}" for result in confirmed)
     if tied:
         details = f"Tie resolved as NOT_HALAL; {details}"
     elif is_conflict:

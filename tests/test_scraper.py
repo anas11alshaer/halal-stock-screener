@@ -74,9 +74,7 @@ def test_one_confirmed_source_is_provisional():
         source="offline",
         state=ResultState.NETWORK_ERROR,
     )
-    final, conflict = resolve_compliance(
-        result("working", ComplianceStatus.HALAL), unavailable
-    )
+    final, conflict = resolve_compliance(result("working", ComplianceStatus.HALAL), unavailable)
     assert final.status == ComplianceStatus.HALAL
     assert final.is_provisional
     assert final.confirmation_count == 1
@@ -133,9 +131,7 @@ def test_zoya_uses_visible_heading_and_preserves_dotted_identity():
     <p>BRK.B is Shariah-compliant in an unrelated hidden template.</p></body></html>
     """
     security = Security("BRK.B", asset_type=AssetType.STOCK)
-    parsed = ZoyaScraper()._parse_content(
-        security, page, "https://zoya.finance/stocks/brk-b"
-    )
+    parsed = ZoyaScraper()._parse_content(security, page, "https://zoya.finance/stocks/brk-b")
     assert parsed.status == ComplianceStatus.NOT_HALAL
     assert parsed.evidence == "BRK.B stock is not Shariah-compliant"
 
@@ -144,9 +140,7 @@ def test_zoya_supports_etf_pages_and_future_heading_variant():
     # Zoya publishes a small set of halal ETFs under /stocks/{slug}.
     page = """<html><body><h2>SPUS ETF is Shariah-compliant</h2></body></html>"""
     security = Security("SPUS", asset_type=AssetType.ETF)
-    parsed = ZoyaScraper()._parse_content(
-        security, page, "https://zoya.finance/stocks/spus"
-    )
+    parsed = ZoyaScraper()._parse_content(security, page, "https://zoya.finance/stocks/spus")
     assert parsed.status == ComplianceStatus.HALAL
     assert parsed.asset_type == AssetType.ETF
     assert parsed.quote_type == "ETF"

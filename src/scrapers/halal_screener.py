@@ -3,6 +3,7 @@
 import httpx
 
 from config import HALAL_SCREENER_API_KEY, HALAL_SCREENER_BASE_URL
+
 from .base import (
     AssetType,
     BaseScraper,
@@ -14,17 +15,13 @@ from .base import (
 
 
 class HalalScreenerProvider(BaseScraper):
-    supported_asset_types = frozenset(
-        {AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN}
-    )
+    supported_asset_types = frozenset({AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN})
 
     @property
     def source_name(self) -> str:
         return "halal_screener"
 
-    async def _fetch_single(
-        self, client: httpx.AsyncClient, security: Security
-    ) -> ScreeningResult:
+    async def _fetch_single(self, client: httpx.AsyncClient, security: Security) -> ScreeningResult:
         if not HALAL_SCREENER_API_KEY:
             return self.failure(
                 security,
@@ -43,9 +40,7 @@ class HalalScreenerProvider(BaseScraper):
             return self.http_failure(security, response, str(response.url))
         try:
             data = response.json()
-            label = (
-                str(data.get("status") or data.get("verdict")).upper().replace(" ", "_")
-            )
+            label = str(data.get("status") or data.get("verdict")).upper().replace(" ", "_")
             status = {
                 "HALAL": ComplianceStatus.HALAL,
                 "COMPLIANT": ComplianceStatus.HALAL,

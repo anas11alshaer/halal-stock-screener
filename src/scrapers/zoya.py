@@ -6,6 +6,7 @@ import re
 import httpx
 
 from config import ZOYA_BASE_URL
+
 from .base import (
     AssetType,
     BaseScraper,
@@ -19,17 +20,13 @@ from .base import (
 class ZoyaScraper(BaseScraper):
     """Parse the authoritative visible verdict heading on public pages."""
 
-    supported_asset_types = frozenset(
-        {AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN}
-    )
+    supported_asset_types = frozenset({AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN})
 
     @property
     def source_name(self) -> str:
         return "zoya"
 
-    async def _fetch_single(
-        self, client: httpx.AsyncClient, security: Security
-    ) -> ScreeningResult:
+    async def _fetch_single(self, client: httpx.AsyncClient, security: Security) -> ScreeningResult:
         slug = security.symbol.lower().replace(".", "-")
         url = f"{ZOYA_BASE_URL}/{slug}"
         response = await self.request(client, "GET", url)
@@ -37,9 +34,7 @@ class ZoyaScraper(BaseScraper):
             return self.http_failure(security, response, url)
         return self._parse_content(security, response.text, url)
 
-    def _parse_content(
-        self, security: Security, page_html: str, url: str
-    ) -> ScreeningResult:
+    def _parse_content(self, security: Security, page_html: str, url: str) -> ScreeningResult:
         if "page not found" in page_html.lower() or "<title>404" in page_html.lower():
             return self.failure(
                 security,
@@ -50,7 +45,7 @@ class ZoyaScraper(BaseScraper):
             )
 
         ticker = security.symbol.upper()
-        heading_match = re.search(r"<h2\b[^>]*>(.*?)</h2>", page_html, re.I | re.S)
+        heading_match = re.search(r"<h2\b[^>]*>(.*?)</h2>", page_html, re.IGNORECASE | re.DOTALL)
         if not heading_match:
             failed = self.failure(
                 security,
@@ -66,24 +61,22 @@ class ZoyaScraper(BaseScraper):
             rf"\b{re.escape(ticker)}\s+(?:stock|etf|fund)\s+is\s+"
             r"(not\s+Shariah-compliant|Shariah-compliant|questionable|doubtful)\b",
             heading,
-            re.I,
+            re.IGNORECASE,
         )
         if not verdict:
             # Fallback: JSON-LD FAQPage or visible text may repeat the verdict.
             faq_match = re.search(
                 r'"FAQPage".*?"text"\s*:\s*"([^"]*?' + re.escape(ticker) + r'[^"]*)"',
                 page_html,
-                re.I | re.S,
+                re.IGNORECASE | re.DOTALL,
             )
             if faq_match:
-                faq_text = re.sub(
-                    r"\s+", " ", html.unescape(faq_match.group(1))
-                ).strip()
+                faq_text = re.sub(r"\s+", " ", html.unescape(faq_match.group(1))).strip()
                 verdict = re.search(
                     rf"\b{re.escape(ticker)}\s+(?:stock|etf|fund)\s+is\s+"
                     r"(not\s+Shariah-compliant|Shariah-compliant|questionable|doubtful)\b",
                     faq_text,
-                    re.I,
+                    re.IGNORECASE,
                 )
                 if verdict:
                     heading = faq_text
@@ -93,7 +86,7 @@ class ZoyaScraper(BaseScraper):
                     rf"\b{re.escape(ticker)}\s+(?:stock|etf|fund)\s+is\s+"
                     r"(not\s+Shariah-compliant|Shariah-compliant|questionable|doubtful)\b",
                     visible,
-                    re.I,
+                    re.IGNORECASE,
                 )
                 if verdict:
                     heading = verdict.group(0)
@@ -140,7 +133,7 @@ class ZoyaScraper(BaseScraper):
     @staticmethod
     def _visible_text(page_html: str) -> str:
         text = re.sub(
-            r"<(script|style)\b[^>]*>.*?</\1>", " ", page_html, flags=re.I | re.S
+            r"<(script|style)\b[^>]*>.*?</\1>", " ", page_html, flags=re.IGNORECASE | re.DOTALL
         )
         text = re.sub(r"<[^>]+>", " ", text)
         return re.sub(r"\s+", " ", html.unescape(text)).strip()

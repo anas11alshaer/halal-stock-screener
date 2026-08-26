@@ -59,9 +59,7 @@ def load_image_extractor(image_cache=None, plugin_path: str | None = None):
     if not path:
         return None
     module_name, class_name = path.split(":", 1)
-    extractor = getattr(importlib.import_module(module_name), class_name)(
-        image_cache=image_cache
-    )
+    extractor = getattr(importlib.import_module(module_name), class_name)(image_cache=image_cache)
     if not isinstance(extractor, ImageExtractor):
         raise TypeError(f"Image extractor {path!r} must extend ImageExtractor")
     return extractor

@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import time
-from typing import Optional
 
 from google import genai
 from google.genai import types
@@ -124,9 +123,7 @@ class GeminiImageExtractor(ImageExtractor):
         self._counter_date = ""
         self._exhausted_models: set[str] = set()
 
-        logger.info(
-            f"ImageParser initialized with {len(self.models)} models (daily rotation)"
-        )
+        logger.info(f"ImageParser initialized with {len(self.models)} models (daily rotation)")
 
     def _reset_if_new_day(self):
         """Reset counter and exhausted models at the start of each new day."""
@@ -210,18 +207,14 @@ Remove known exchange suffixes, but preserve share-class dots such as BRK.B."""
 
         model = self._get_next_model()
         if model is None:
-            raise QuotaExceededError(
-                "All models exhausted for today. Try again tomorrow."
-            )
+            raise QuotaExceededError("All models exhausted for today. Try again tomorrow.")
 
         while model is not None:
             logger.info(f"Using model: {model}")
 
             for attempt in range(MAX_RETRIES):
                 try:
-                    image_part = types.Part.from_bytes(
-                        data=image_data, mime_type="image/jpeg"
-                    )
+                    image_part = types.Part.from_bytes(data=image_data, mime_type="image/jpeg")
 
                     response = await self.client.aio.models.generate_content(
                         model=model,
@@ -294,9 +287,7 @@ Remove known exchange suffixes, but preserve share-class dots such as BRK.B."""
 
         try:
             # Try to find JSON in markdown code blocks
-            json_match = re.search(
-                r"```(?:json)?\s*(\{.*\})\s*```", response_text, re.DOTALL
-            )
+            json_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", response_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group(1)
                 logger.debug("Found JSON in code block")
@@ -321,13 +312,9 @@ Remove known exchange suffixes, but preserve share-class dots such as BRK.B."""
                 if cleaned and is_valid_ticker(cleaned):
                     valid_tickers.append(cleaned)
                 elif cleaned:
-                    logger.debug(
-                        f"Ticker '{ticker}' -> '{cleaned}' filtered out by validation"
-                    )
+                    logger.debug(f"Ticker '{ticker}' -> '{cleaned}' filtered out by validation")
 
-            logger.info(
-                f"Extracted {len(valid_tickers)} valid tickers: {valid_tickers}"
-            )
+            logger.info(f"Extracted {len(valid_tickers)} valid tickers: {valid_tickers}")
             return valid_tickers
 
         except json.JSONDecodeError as e:
@@ -335,15 +322,13 @@ Remove known exchange suffixes, but preserve share-class dots such as BRK.B."""
             logger.warning(f"Response was: {response_text[:200]}")
             return self._extract_tickers_regex(response_text)
 
-    def _clean_ticker(self, ticker: str) -> Optional[str]:
+    def _clean_ticker(self, ticker: str) -> str | None:
         """Clean and normalize a ticker symbol."""
         if not ticker:
             return None
 
         ticker = ticker.upper().strip()
-        ticker = re.sub(
-            r"\.(US|NASDAQ|NYSE|AMEX|OTC|TSX|LSE)$", "", ticker, flags=re.IGNORECASE
-        )
+        ticker = re.sub(r"\.(US|NASDAQ|NYSE|AMEX|OTC|TSX|LSE)$", "", ticker, flags=re.IGNORECASE)
         ticker = re.sub(r"[^A-Z0-9.]", "", ticker)
 
         return ticker if ticker else None

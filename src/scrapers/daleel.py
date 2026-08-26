@@ -5,6 +5,7 @@ import json
 import httpx
 
 from config import DALEEL_API_KEY, DALEEL_BASE_URL
+
 from .base import (
     AssetType,
     BaseScraper,
@@ -16,17 +17,13 @@ from .base import (
 
 
 class DaleelProvider(BaseScraper):
-    supported_asset_types = frozenset(
-        {AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN}
-    )
+    supported_asset_types = frozenset({AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN})
 
     @property
     def source_name(self) -> str:
         return "daleel"
 
-    async def _fetch_single(
-        self, client: httpx.AsyncClient, security: Security
-    ) -> ScreeningResult:
+    async def _fetch_single(self, client: httpx.AsyncClient, security: Security) -> ScreeningResult:
         url = f"{DALEEL_BASE_URL}/v1/screen/{security.symbol.upper()}"
         headers = {"X-API-Key": DALEEL_API_KEY} if DALEEL_API_KEY else None
         response = await self.request(client, "GET", url, headers=headers)
@@ -79,11 +76,7 @@ class DaleelProvider(BaseScraper):
             evidence = f"Holdings look-through; {coverage:g}% of fund screened"
         else:
             evidence_items = data.get("evidence") or []
-            concepts = [
-                item.get("concept")
-                for item in evidence_items[:3]
-                if item.get("concept")
-            ]
+            concepts = [item.get("concept") for item in evidence_items[:3] if item.get("concept")]
             evidence = (
                 "SEC filing evidence: " + ", ".join(concepts)
                 if concepts

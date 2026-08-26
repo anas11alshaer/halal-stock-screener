@@ -7,6 +7,7 @@ import re
 import httpx
 
 from config import MUSAFFA_BASE_URL
+
 from .base import (
     AssetType,
     BaseScraper,
@@ -23,17 +24,13 @@ logger = logging.getLogger(__name__)
 class MusaffaScraper(BaseScraper):
     """Screen stocks and ETFs through Musaffa's public detail pages."""
 
-    supported_asset_types = frozenset(
-        {AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN}
-    )
+    supported_asset_types = frozenset({AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN})
 
     @property
     def source_name(self) -> str:
         return "musaffa"
 
-    async def _fetch_single(
-        self, client: httpx.AsyncClient, security: Security
-    ) -> ScreeningResult:
+    async def _fetch_single(self, client: httpx.AsyncClient, security: Security) -> ScreeningResult:
         routes = self._routes(security)
         last_result: ScreeningResult | None = None
         for route_type, url in routes:
@@ -160,7 +157,7 @@ class MusaffaScraper(BaseScraper):
     @staticmethod
     def _visible_text(page_html: str) -> str:
         without_scripts = re.sub(
-            r"<(script|style)\b[^>]*>.*?</\1>", " ", page_html, flags=re.I | re.S
+            r"<(script|style)\b[^>]*>.*?</\1>", " ", page_html, flags=re.IGNORECASE | re.DOTALL
         )
         text = re.sub(r"<[^>]+>", " ", without_scripts)
         return re.sub(r"\s+", " ", html.unescape(text)).strip()
@@ -174,13 +171,13 @@ class MusaffaScraper(BaseScraper):
         )
         if meta_match:
             meta_raw = html.unescape(meta_match.group(1))
-            name_match = re.search(r"^Is\s+(.+?)\s+halal\?", meta_raw, re.I)
+            name_match = re.search(r"^Is\s+(.+?)\s+halal\?", meta_raw, re.IGNORECASE)
             if name_match:
                 return name_match.group(1).strip()
-        title_match = re.search(r"<title>([^<]+)</title>", page_html, re.I)
+        title_match = re.search(r"<title>([^<]+)</title>", page_html, re.IGNORECASE)
         if title_match:
             title = html.unescape(title_match.group(1))
-            name_match = re.search(r"^Is\s+(.+?)\s+Halal\?", title, re.I)
+            name_match = re.search(r"^Is\s+(.+?)\s+Halal\?", title, re.IGNORECASE)
             if name_match:
                 return name_match.group(1).strip()
         return None

@@ -1,11 +1,10 @@
 """Database module for caching and historical tracking."""
 
 import json
-import sqlite3
-from datetime import datetime, timedelta
-from typing import Optional
-from contextlib import contextmanager
 import logging
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 from config import (
     CACHE_SCHEMA_VERSION,
@@ -25,9 +24,9 @@ def get_connection():
     try:
         yield conn
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        raise e
+        raise
     finally:
         conn.close()
 
@@ -217,14 +216,12 @@ class TickerCache:
     """Cache layer for ticker screening results."""
 
     @staticmethod
-    def get(ticker: str, source: str = "musaffa") -> Optional[dict]:
+    def get(ticker: str, source: str = "musaffa") -> dict | None:
         """Get cached result for a ticker from a specific source if not expired."""
         ticker = ticker.upper()
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM cache WHERE ticker = ? AND source = ?", (ticker, source)
-            )
+            cursor.execute("SELECT * FROM cache WHERE ticker = ? AND source = ?", (ticker, source))
             row = cursor.fetchone()
 
             if row is None:
@@ -240,9 +237,7 @@ class TickerCache:
             # Check if cache has expired
             cached_at = datetime.fromisoformat(row["cached_at"])
             ttl_hours = (
-                NOT_COVERED_CACHE_TTL_HOURS
-                if row["status"] == "NOT_COVERED"
-                else CACHE_TTL_HOURS
+                NOT_COVERED_CACHE_TTL_HOURS if row["status"] == "NOT_COVERED" else CACHE_TTL_HOURS
             )
             if datetime.now() - cached_at > timedelta(hours=ttl_hours):
                 # Cache expired, delete it
@@ -278,18 +273,18 @@ class TickerCache:
         ticker: str,
         status: str,
         source: str,
-        compliance_ranking: str = None,
-        details: str = None,
-        company_name: str = None,
-        error_message: str = None,
-        quote_type: str = None,
+        compliance_ranking: str | None = None,
+        details: str | None = None,
+        company_name: str | None = None,
+        error_message: str | None = None,
+        quote_type: str | None = None,
         state: str = "SUCCESS",
         asset_type: str = "UNKNOWN",
-        url: str = None,
-        evidence: str = None,
-        methodology: str = None,
+        url: str | None = None,
+        evidence: str | None = None,
+        methodology: str | None = None,
         retrieval_method: str = "deterministic",
-        checked_at: str = None,
+        checked_at: str | None = None,
     ):
         """Cache a ticker result for a specific source."""
         ticker = ticker.upper()
@@ -327,7 +322,7 @@ class TickerCache:
             logger.debug(f"Cached result for {ticker} from {source}")
 
     @staticmethod
-    def invalidate(ticker: str, source: str = None):
+    def invalidate(ticker: str, source: str | None = None):
         """Remove a ticker from cache. If source is None, removes from all sources."""
         ticker = ticker.upper()
         with get_connection() as conn:
@@ -345,9 +340,7 @@ class TickerCache:
         """Remove all expired cache entries."""
         with get_connection() as conn:
             cursor = conn.cursor()
-            expiry_time = (
-                datetime.now() - timedelta(hours=CACHE_TTL_HOURS)
-            ).isoformat()
+            expiry_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS)).isoformat()
             cursor.execute("DELETE FROM cache WHERE cached_at < ?", (expiry_time,))
             deleted = cursor.rowcount
             if deleted > 0:
@@ -366,8 +359,8 @@ class CheckHistory:
         is_conflict: bool = False,
         is_provisional: bool = False,
         confirmation_count: int = 0,
-        musaffa_status: str = None,
-        zoya_status: str = None,
+        musaffa_status: str | None = None,
+        zoya_status: str | None = None,
     ):
         """Record a check in history with multi-source support."""
         ticker = ticker.upper()
@@ -393,9 +386,7 @@ class CheckHistory:
                     confirmation_count,
                 ),
             )
-            logger.debug(
-                f"Recorded check: user={user_id}, ticker={ticker}, conflict={is_conflict}"
-            )
+            logger.debug(f"Recorded check: user={user_id}, ticker={ticker}, conflict={is_conflict}")
 
     @staticmethod
     def get_user_history(user_id: int, limit: int = 20) -> list:
@@ -464,7 +455,7 @@ class ImageCache:
     """Cache layer for image-to-tickers extraction results."""
 
     @staticmethod
-    def get(image_hash: str) -> Optional[list[str]]:
+    def get(image_hash: str) -> list[str] | None:
         """Get cached tickers for an image hash if not expired."""
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -480,9 +471,7 @@ class ImageCache:
             # Check if cache has expired (same TTL as ticker cache)
             cached_at = datetime.fromisoformat(row["cached_at"])
             if datetime.now() - cached_at > timedelta(hours=CACHE_TTL_HOURS):
-                cursor.execute(
-                    "DELETE FROM image_cache WHERE image_hash = ?", (image_hash,)
-                )
+                cursor.execute("DELETE FROM image_cache WHERE image_hash = ?", (image_hash,))
                 return None
 
             # Parse JSON list of tickers
@@ -503,21 +492,15 @@ class ImageCache:
             """,
                 (image_hash, json.dumps(tickers), datetime.now().isoformat()),
             )
-            logger.debug(
-                f"Cached {len(tickers)} tickers for image hash {image_hash[:8]}..."
-            )
+            logger.debug(f"Cached {len(tickers)} tickers for image hash {image_hash[:8]}...")
 
     @staticmethod
     def clear_expired():
         """Remove all expired image cache entries."""
         with get_connection() as conn:
             cursor = conn.cursor()
-            expiry_time = (
-                datetime.now() - timedelta(hours=CACHE_TTL_HOURS)
-            ).isoformat()
-            cursor.execute(
-                "DELETE FROM image_cache WHERE cached_at < ?", (expiry_time,)
-            )
+            expiry_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS)).isoformat()
+            cursor.execute("DELETE FROM image_cache WHERE cached_at < ?", (expiry_time,))
             deleted = cursor.rowcount
             if deleted > 0:
                 logger.info(f"Cleared {deleted} expired image cache entries")

@@ -54,17 +54,13 @@ Or send an image with stock tickers.
             )
             return
         status_message = await update.message.reply_text("Checking...")
-        response = await self.screener.screen_text(
-            " ".join(context.args), update.effective_user.id
-        )
+        response = await self.screener.screen_text(" ".join(context.args), update.effective_user.id)
         await self._deliver_response(status_message, update, response)
 
     async def history_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         history = self.screener.get_user_history(update.effective_user.id, limit=15)
         if not history:
-            await update.message.reply_text(
-                "No history yet. Send a ticker to get started."
-            )
+            await update.message.reply_text("No history yet. Send a ticker to get started.")
             return
         icons = {
             "HALAL": "✅",
@@ -85,9 +81,7 @@ Or send an image with stock tickers.
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = self.screener.get_user_stats(update.effective_user.id)
         if stats["total_checks"] == 0:
-            await update.message.reply_text(
-                "No statistics yet. Send a ticker to get started."
-            )
+            await update.message.reply_text("No statistics yet. Send a ticker to get started.")
             return
         lines = [
             "<b>Your Statistics</b>",
@@ -121,9 +115,7 @@ Or send an image with stock tickers.
         telegram_file = await context.bot.get_file(photo.file_id)
         buffer = BytesIO()
         await telegram_file.download_to_memory(buffer)
-        response = await self.screener.screen_image(
-            buffer.getvalue(), update.effective_user.id
-        )
+        response = await self.screener.screen_image(buffer.getvalue(), update.effective_user.id)
         await self._deliver_response(status_message, update, response)
 
     @staticmethod
@@ -136,9 +128,7 @@ Or send an image with stock tickers.
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error("Telegram update failed: %s", context.error)
         if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "Something went wrong. Please try again."
-            )
+            await update.effective_message.reply_text("Something went wrong. Please try again.")
 
     def run(self):
         if not TELEGRAM_BOT_TOKEN:
@@ -150,9 +140,7 @@ Or send an image with stock tickers.
         application.add_handler(CommandHandler("check", self.check_command))
         application.add_handler(CommandHandler("history", self.history_command))
         application.add_handler(CommandHandler("stats", self.stats_command))
-        application.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text)
-        )
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         application.add_error_handler(self.error_handler)
         self.screener.clear_expired_cache()

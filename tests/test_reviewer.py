@@ -58,6 +58,4 @@ def test_rejects_generic_verdict_not_bound_to_ticker():
             "contradiction": False,
         }
     )
-    assert (
-        GeminiEvidenceReviewer._validate(response, "AAPL profile HALAL", "AAPL") is None
-    )
+    assert GeminiEvidenceReviewer._validate(response, "AAPL profile HALAL", "AAPL") is None

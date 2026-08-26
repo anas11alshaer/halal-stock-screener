@@ -7,10 +7,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional
 
 import httpx
-from config import REQUEST_TIMEOUT, MAX_RETRIES
+
+from config import MAX_RETRIES, REQUEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -84,21 +84,21 @@ class ScreeningResult:
     ticker: str
     status: ComplianceStatus
     source: str = "unknown"
-    compliance_ranking: Optional[str] = None
-    company_name: Optional[str] = None
-    details: Optional[str] = None
-    error_message: Optional[str] = None
-    quote_type: Optional[str] = None
+    compliance_ranking: str | None = None
+    company_name: str | None = None
+    details: str | None = None
+    error_message: str | None = None
+    quote_type: str | None = None
     state: ResultState = ResultState.SUCCESS
     asset_type: AssetType = AssetType.UNKNOWN
-    url: Optional[str] = None
-    evidence: Optional[str] = None
-    methodology: Optional[str] = None
-    checked_at: Optional[str] = None
+    url: str | None = None
+    evidence: str | None = None
+    methodology: str | None = None
+    checked_at: str | None = None
     retrieval_method: str = "deterministic"
     is_provisional: bool = False
     confirmation_count: int = 0
-    review_text: Optional[str] = None
+    review_text: str | None = None
 
     @property
     def is_confirmed(self) -> bool:
@@ -114,10 +114,10 @@ class Security:
     """Provider-neutral identity resolved before screening."""
 
     symbol: str
-    name: Optional[str] = None
+    name: str | None = None
     asset_type: AssetType = AssetType.UNKNOWN
-    exchange: Optional[str] = None
-    yahoo_symbol: Optional[str] = None
+    exchange: str | None = None
+    yahoo_symbol: str | None = None
 
     @property
     def quote_type(self) -> str:
@@ -151,9 +151,7 @@ class BaseScraper(ABC):
         """Short identifier used in logs and ScreeningResult.source (e.g. 'musaffa')."""
 
     @abstractmethod
-    async def _fetch_single(
-        self, client: httpx.AsyncClient, security: Security
-    ) -> ScreeningResult:
+    async def _fetch_single(self, client: httpx.AsyncClient, security: Security) -> ScreeningResult:
         """Fetch and parse one resolved security."""
 
     # ------------------------------------------------------------------
@@ -176,9 +174,7 @@ class BaseScraper(ABC):
         securities = [Security(symbol=ticker.upper().strip()) for ticker in tickers]
         return await self.screen_securities(securities)
 
-    async def screen_securities(
-        self, securities: list[Security]
-    ) -> list[ScreeningResult]:
+    async def screen_securities(self, securities: list[Security]) -> list[ScreeningResult]:
         """Screen securities concurrently while sharing connections."""
         if not securities:
             return []
@@ -194,9 +190,7 @@ class BaseScraper(ABC):
             )
         return list(results)
 
-    async def _screen_safe(
-        self, client: httpx.AsyncClient, security: Security
-    ) -> ScreeningResult:
+    async def _screen_safe(self, client: httpx.AsyncClient, security: Security) -> ScreeningResult:
         if not self.supports(security):
             return self.failure(
                 security,
@@ -208,28 +202,18 @@ class BaseScraper(ABC):
             result = await self._fetch_single(client, security)
             result.checked_at = result.checked_at or datetime.now(UTC).isoformat()
             result.asset_type = (
-                security.asset_type
-                if result.asset_type == AssetType.UNKNOWN
-                else result.asset_type
+                security.asset_type if result.asset_type == AssetType.UNKNOWN else result.asset_type
             )
             result.quote_type = result.quote_type or security.quote_type
             result.company_name = result.company_name or security.name
             return result
         except httpx.TimeoutException:
-            return self.failure(
-                security, ResultState.NETWORK_ERROR, "Request timed out"
-            )
+            return self.failure(security, ResultState.NETWORK_ERROR, "Request timed out")
         except httpx.HTTPError as exc:
-            logger.warning(
-                "%s request failed for %s: %s", self.source_name, security.symbol, exc
-            )
-            return self.failure(
-                security, ResultState.NETWORK_ERROR, "Network request failed"
-            )
+            logger.warning("%s request failed for %s: %s", self.source_name, security.symbol, exc)
+            return self.failure(security, ResultState.NETWORK_ERROR, "Network request failed")
         except Exception:
-            logger.exception(
-                "Unexpected %s failure for %s", self.source_name, security.symbol
-            )
+            logger.exception("Unexpected %s failure for %s", self.source_name, security.symbol)
             return self.failure(
                 security, ResultState.SOURCE_UNAVAILABLE, "Provider failed unexpectedly"
             )

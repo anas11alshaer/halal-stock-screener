@@ -23,7 +23,5 @@ def test_image_extractor_can_be_disabled():
 
 
 def test_image_extractor_loads_by_import_path():
-    extractor = load_image_extractor(
-        plugin_path="test_image_extractor_plugin:FakeImageExtractor"
-    )
+    extractor = load_image_extractor(plugin_path="test_image_extractor_plugin:FakeImageExtractor")
     assert asyncio.run(extractor.extract_tickers(b"image")) == ["AAPL", "BRK.B"]

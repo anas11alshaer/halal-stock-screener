@@ -50,9 +50,7 @@ class FixedProvider(BaseScraper):
             evidence=f"{self.source_name} evidence"
             if self.fixed_state == ResultState.SUCCESS
             else None,
-            error_message="temporary failure"
-            if self.fixed_state != ResultState.SUCCESS
-            else None,
+            error_message="temporary failure" if self.fixed_state != ResultState.SUCCESS else None,
         )
 
 

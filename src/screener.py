@@ -4,7 +4,6 @@ import asyncio
 import html
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 from config import MAX_TICKERS_PER_REQUEST
 from database import CheckHistory, ImageCache, TickerCache, init_database
@@ -17,14 +16,14 @@ from plugins import (
 )
 from resolver import resolve_compliance
 from scrapers import (
+    STATUS_ICON,
+    STATUS_TEXT,
     AssetType,
     BaseScraper,
     ComplianceStatus,
     ResultState,
     ScreeningResult,
     Security,
-    STATUS_ICON,
-    STATUS_TEXT,
 )
 from security_resolver import YahooSecurityResolver
 
@@ -46,7 +45,7 @@ STATE_TEXT = {
 class ScreenResponse:
     results: list[ScreeningResult]
     from_cache: list[bool]
-    error: Optional[str] = None
+    error: str | None = None
     source_results: dict[str, dict[str, ScreeningResult]] = field(default_factory=dict)
 
     def format_message(self) -> str:
@@ -69,9 +68,7 @@ class ScreenResponse:
             single = ScreenResponse(
                 results=[result],
                 from_cache=[False],
-                source_results={
-                    result.ticker: self.source_results.get(result.ticker, {})
-                },
+                source_results={result.ticker: self.source_results.get(result.ticker, {})},
             ).format_message()
             messages.append(single[:max_length])
         return messages
@@ -98,23 +95,17 @@ class ScreenResponse:
             lines.append("ℹ️ Sources disagree; majority vote applied")
 
         lines.extend(["", "<b>Sources</b>"])
-        for provider_id, provider_result in self.source_results.get(
-            result.ticker, {}
-        ).items():
+        for provider_id, provider_result in self.source_results.get(result.ticker, {}).items():
             display_name = html.escape(provider_id.replace("_", " ").title())
             if provider_result.is_confirmed:
                 provider_icon = STATUS_ICON.get(provider_result.status, "❓")
                 provider_status = STATUS_TEXT.get(provider_result.status, "Unknown")
-                lines.append(
-                    f"{provider_icon} <b>{display_name}</b>: {provider_status}"
-                )
+                lines.append(f"{provider_icon} <b>{display_name}</b>: {provider_status}")
                 if provider_result.evidence:
                     evidence = provider_result.evidence[:300]
                     lines.append(f"Evidence: “{html.escape(evidence)}”")
                 if provider_result.methodology:
-                    lines.append(
-                        f"Method: {html.escape(provider_result.methodology[:180])}"
-                    )
+                    lines.append(f"Method: {html.escape(provider_result.methodology[:180])}")
                 if provider_result.url:
                     safe_url = html.escape(provider_result.url, quote=True)
                     lines.append(f'<a href="{safe_url}">Open source</a>')
@@ -138,9 +129,7 @@ class ScreenResponse:
                 f"{provisional}{status} ({result.confirmation_count} confirmed)"
             )
             source_parts = []
-            for provider_id, provider_result in self.source_results.get(
-                result.ticker, {}
-            ).items():
+            for provider_id, provider_result in self.source_results.get(result.ticker, {}).items():
                 if provider_result.is_confirmed:
                     value = STATUS_TEXT.get(provider_result.status, "Unknown")
                 else:
@@ -164,14 +153,10 @@ class StockScreener:
         evidence_reviewer=None,
         image_extractor: ImageExtractor | None = None,
     ):
-        self.providers = (
-            providers if providers is not None else load_screening_providers()
-        )
+        self.providers = providers if providers is not None else load_screening_providers()
         self.security_resolver = security_resolver or YahooSecurityResolver()
         self.evidence_reviewer = (
-            evidence_reviewer
-            if evidence_reviewer is not None
-            else load_evidence_reviewer()
+            evidence_reviewer if evidence_reviewer is not None else load_evidence_reviewer()
         )
         self.image_extractor = image_extractor
         if self.image_extractor is None:
@@ -185,12 +170,12 @@ class StockScreener:
             logger.warning("Image extractor not available: %s", exc)
 
     async def screen_tickers(
-        self, tickers: list[str], user_id: Optional[int] = None
+        self, tickers: list[str], user_id: int | None = None
     ) -> ScreenResponse:
         return await self.screen_queries(tickers, user_id)
 
     async def screen_queries(
-        self, queries: list[str], user_id: Optional[int] = None
+        self, queries: list[str], user_id: int | None = None
     ) -> ScreenResponse:
         if not queries:
             return ScreenResponse([], [], error="No security name or ticker provided")
@@ -211,9 +196,7 @@ class StockScreener:
                     error=f"{query!r} is ambiguous. Use one of: {choices}",
                 )
             if not resolution.security:
-                return ScreenResponse(
-                    [], [], error=resolution.error or "Security not found"
-                )
+                return ScreenResponse([], [], error=resolution.error or "Security not found")
             securities.append(resolution.security)
 
         unique = {security.symbol: security for security in securities}
@@ -228,12 +211,10 @@ class StockScreener:
             all_results.extend(response.results)
             all_cached.extend(response.from_cache)
             all_source_results.update(response.source_results)
-        return ScreenResponse(
-            all_results, all_cached, source_results=all_source_results
-        )
+        return ScreenResponse(all_results, all_cached, source_results=all_source_results)
 
     async def _screen_batch(
-        self, securities: list[Security], user_id: Optional[int]
+        self, securities: list[Security], user_id: int | None
     ) -> ScreenResponse:
         provider_results: dict[str, dict[str, ScreeningResult]] = {
             security.symbol: {} for security in securities
@@ -244,18 +225,16 @@ class StockScreener:
             missing: list[Security] = []
             for security in securities:
                 if not provider.supports(security):
-                    provider_results[security.symbol][provider.source_name] = (
-                        provider.failure(
-                            security,
-                            ResultState.UNSUPPORTED_ASSET,
-                            f"{provider.source_name} does not support {security.asset_type.value}",
-                        )
+                    provider_results[security.symbol][provider.source_name] = provider.failure(
+                        security,
+                        ResultState.UNSUPPORTED_ASSET,
+                        f"{provider.source_name} does not support {security.asset_type.value}",
                     )
                     continue
                 cached = TickerCache.get(security.symbol, provider.source_name)
                 if cached:
-                    provider_results[security.symbol][provider.source_name] = (
-                        self._from_cache(cached)
+                    provider_results[security.symbol][provider.source_name] = self._from_cache(
+                        cached
                     )
                     cached_pairs.add((security.symbol, provider.source_name))
                 else:
@@ -263,9 +242,7 @@ class StockScreener:
             fresh = await provider.screen_securities(missing)
             for result in fresh:
                 if self.evidence_reviewer and result.state == ResultState.PARSE_ERROR:
-                    security = next(
-                        item for item in missing if item.symbol == result.ticker
-                    )
+                    security = next(item for item in missing if item.symbol == result.ticker)
                     result = await self.evidence_reviewer.review(security, result)
                 provider_results[result.ticker][provider.source_name] = result
                 if result.is_confirmed or result.state == ResultState.NOT_COVERED:
@@ -277,9 +254,7 @@ class StockScreener:
         from_cache: list[bool] = []
         for security in securities:
             ordered_map = {
-                provider.source_name: provider_results[security.symbol][
-                    provider.source_name
-                ]
+                provider.source_name: provider_results[security.symbol][provider.source_name]
                 for provider in self.providers
             }
             provider_results[security.symbol] = ordered_map
@@ -290,9 +265,7 @@ class StockScreener:
                 final.asset_type = security.asset_type
                 final.quote_type = security.quote_type
             final_results.append(final)
-            applicable = [
-                provider for provider in self.providers if provider.supports(security)
-            ]
+            applicable = [provider for provider in self.providers if provider.supports(security)]
             from_cache.append(
                 bool(applicable)
                 and all(
@@ -316,9 +289,7 @@ class StockScreener:
                     is_provisional=final.is_provisional,
                     confirmation_count=final.confirmation_count,
                 )
-        return ScreenResponse(
-            final_results, from_cache, source_results=provider_results
-        )
+        return ScreenResponse(final_results, from_cache, source_results=provider_results)
 
     @staticmethod
     def _from_cache(cached: dict) -> ScreeningResult:
@@ -360,17 +331,13 @@ class StockScreener:
             checked_at=result.checked_at,
         )
 
-    async def screen_text(
-        self, text: str, user_id: Optional[int] = None
-    ) -> ScreenResponse:
+    async def screen_text(self, text: str, user_id: int | None = None) -> ScreenResponse:
         tickers = parse_text_for_tickers(text)
         if tickers:
             return await self.screen_queries(tickers, user_id)
         return await self.screen_queries([text.strip()], user_id)
 
-    async def screen_image(
-        self, image_data: bytes, user_id: Optional[int] = None
-    ) -> ScreenResponse:
+    async def screen_image(self, image_data: bytes, user_id: int | None = None) -> ScreenResponse:
         if self.image_extractor is None:
             return ScreenResponse(
                 [], [], error="Image analysis is unavailable. Set GEMINI_API_KEY."
@@ -391,9 +358,7 @@ class StockScreener:
                 error="Failed to analyze the image. Send ticker symbols as text.",
             )
         if not tickers:
-            return ScreenResponse(
-                [], [], error="No stock or ETF tickers found in the image."
-            )
+            return ScreenResponse([], [], error="No stock or ETF tickers found in the image.")
         return await self.screen_queries(tickers, user_id)
 
     def get_user_history(self, user_id: int, limit: int = 20) -> list[dict]:

@@ -20,14 +20,8 @@ class GeminiEvidenceReviewer:
     def __init__(self):
         self.client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-    async def review(
-        self, security: Security, result: ScreeningResult
-    ) -> ScreeningResult:
-        if (
-            self.client is None
-            or result.state != ResultState.PARSE_ERROR
-            or not result.review_text
-        ):
+    async def review(self, security: Security, result: ScreeningResult) -> ScreeningResult:
+        if self.client is None or result.state != ResultState.PARSE_ERROR or not result.review_text:
             return result
 
         snippet = result.review_text[:5000]
@@ -97,9 +91,7 @@ TEXT:
                 or data.get("contradiction")
                 or not isinstance(evidence, str)
                 or evidence not in supplied_text
-                or not re.search(
-                    rf"\b{re.escape(expected_ticker)}\b", evidence, re.IGNORECASE
-                )
+                or not re.search(rf"\b{re.escape(expected_ticker)}\b", evidence, re.IGNORECASE)
                 or not re.search(
                     r"\b(?:not\s+halal|non[_ -]?compliant|doubtful|questionable|halal|compliant)\b",
                     evidence,

@@ -2,25 +2,26 @@
 
 import hashlib
 import json
-import pytest
+
+# Add src to path
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-# Add src to path
-import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from config import CACHE_TTL_HOURS
+from database import ImageCache, get_connection, init_database
 from image_parser import (
     ImageParser,
+    QuotaExceededError,
     is_valid_ticker,
     parse_text_for_tickers,
-    QuotaExceededError,
 )
-from database import ImageCache, init_database, get_connection
-from config import CACHE_TTL_HOURS
 
 
 class TestIsValidTicker:
@@ -67,9 +68,10 @@ class TestImageCache:
     @pytest.fixture(autouse=True)
     def setup_database(self):
         """Initialize clean database for each test."""
+        import tempfile
+
         import config
         import database
-        import tempfile
 
         original_config_path = config.DATABASE_PATH
         original_db_path = database.DATABASE_PATH
@@ -118,9 +120,7 @@ class TestImageCache:
         # Check raw database value
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT tickers FROM image_cache WHERE image_hash = ?", (image_hash,)
-            )
+            cursor.execute("SELECT tickers FROM image_cache WHERE image_hash = ?", (image_hash,))
             row = cursor.fetchone()
 
             # Should be JSON string
@@ -137,9 +137,7 @@ class TestImageCache:
         # Insert with expired timestamp
         with get_connection() as conn:
             cursor = conn.cursor()
-            expired_time = (
-                datetime.now() - timedelta(hours=CACHE_TTL_HOURS + 1)
-            ).isoformat()
+            expired_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS + 1)).isoformat()
             cursor.execute(
                 "INSERT INTO image_cache (image_hash, tickers, cached_at) VALUES (?, ?, ?)",
                 (image_hash, json.dumps(tickers), expired_time),
@@ -152,9 +150,7 @@ class TestImageCache:
         # Verify it was deleted
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT COUNT(*) FROM image_cache WHERE image_hash = ?", (image_hash,)
-            )
+            cursor.execute("SELECT COUNT(*) FROM image_cache WHERE image_hash = ?", (image_hash,))
             count = cursor.fetchone()[0]
             assert count == 0
 
@@ -166,9 +162,7 @@ class TestImageCache:
         # Add expired entry
         with get_connection() as conn:
             cursor = conn.cursor()
-            expired_time = (
-                datetime.now() - timedelta(hours=CACHE_TTL_HOURS + 1)
-            ).isoformat()
+            expired_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS + 1)).isoformat()
             cursor.execute(
                 "INSERT INTO image_cache (image_hash, tickers, cached_at) VALUES (?, ?, ?)",
                 ("expired_hash", json.dumps(["MSFT"]), expired_time),
@@ -442,9 +436,10 @@ class TestImageParserCacheIntegration:
     @pytest.fixture(autouse=True)
     def setup_database(self):
         """Initialize clean database for each test."""
+        import tempfile
+
         import config
         import database
-        import tempfile
 
         original_config_path = config.DATABASE_PATH
         original_db_path = database.DATABASE_PATH
