@@ -124,7 +124,6 @@ class ScreenResponse:
                 if provider_result.error_message:
                     lines.append(html.escape(provider_result.error_message[:300]))
             lines.append("")
-        lines.append("Results are informational, not financial advice or a fatwa.")
         return "\n".join(lines).strip()
 
     def _format_multiple(self) -> str:

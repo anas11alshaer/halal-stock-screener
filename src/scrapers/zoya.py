@@ -17,9 +17,11 @@ from .base import (
 
 
 class ZoyaScraper(BaseScraper):
-    """Parse the authoritative visible verdict heading on public stock pages."""
+    """Parse the authoritative visible verdict heading on public pages."""
 
-    supported_asset_types = frozenset({AssetType.STOCK, AssetType.UNKNOWN})
+    supported_asset_types = frozenset(
+        {AssetType.STOCK, AssetType.ETF, AssetType.UNKNOWN}
+    )
 
     @property
     def source_name(self) -> str:
@@ -42,7 +44,7 @@ class ZoyaScraper(BaseScraper):
             return self.failure(
                 security,
                 ResultState.NOT_COVERED,
-                "Stock not found on Zoya",
+                "Security not found on Zoya",
                 url=url,
                 status=ComplianceStatus.NOT_COVERED,
             )
@@ -61,11 +63,40 @@ class ZoyaScraper(BaseScraper):
         heading = re.sub(r"<[^>]+>", " ", heading_match.group(1))
         heading = re.sub(r"\s+", " ", html.unescape(heading)).strip()
         verdict = re.search(
-            rf"\b{re.escape(ticker)}\s+stock\s+is\s+"
+            rf"\b{re.escape(ticker)}\s+(?:stock|etf|fund)\s+is\s+"
             r"(not\s+Shariah-compliant|Shariah-compliant|questionable|doubtful)\b",
             heading,
             re.I,
         )
+        if not verdict:
+            # Fallback: JSON-LD FAQPage or visible text may repeat the verdict.
+            faq_match = re.search(
+                r'"FAQPage".*?"text"\s*:\s*"([^"]*?' + re.escape(ticker) + r'[^"]*)"',
+                page_html,
+                re.I | re.S,
+            )
+            if faq_match:
+                faq_text = re.sub(
+                    r"\s+", " ", html.unescape(faq_match.group(1))
+                ).strip()
+                verdict = re.search(
+                    rf"\b{re.escape(ticker)}\s+(?:stock|etf|fund)\s+is\s+"
+                    r"(not\s+Shariah-compliant|Shariah-compliant|questionable|doubtful)\b",
+                    faq_text,
+                    re.I,
+                )
+                if verdict:
+                    heading = faq_text
+            if not verdict:
+                visible = self._visible_text(page_html)
+                verdict = re.search(
+                    rf"\b{re.escape(ticker)}\s+(?:stock|etf|fund)\s+is\s+"
+                    r"(not\s+Shariah-compliant|Shariah-compliant|questionable|doubtful)\b",
+                    visible,
+                    re.I,
+                )
+                if verdict:
+                    heading = verdict.group(0)
         if not verdict:
             state = (
                 ResultState.IDENTITY_MISMATCH
@@ -89,12 +120,18 @@ class ZoyaScraper(BaseScraper):
             status = ComplianceStatus.DOUBTFUL
         else:
             status = ComplianceStatus.HALAL
+        asset_type = (
+            security.asset_type
+            if security.asset_type in {AssetType.STOCK, AssetType.ETF}
+            else AssetType.STOCK
+        )
+        quote_type = "ETF" if asset_type == AssetType.ETF else "EQUITY"
         return ScreeningResult(
             ticker=ticker,
             status=status,
             source=self.source_name,
-            quote_type="EQUITY",
-            asset_type=AssetType.STOCK,
+            quote_type=quote_type,
+            asset_type=asset_type,
             url=url,
             evidence=heading,
             methodology="AAOIFI",

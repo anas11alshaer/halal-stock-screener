@@ -140,6 +140,19 @@ def test_zoya_uses_visible_heading_and_preserves_dotted_identity():
     assert parsed.evidence == "BRK.B stock is not Shariah-compliant"
 
 
+def test_zoya_supports_etf_pages_and_future_heading_variant():
+    # Zoya publishes a small set of halal ETFs under /stocks/{slug}.
+    page = """<html><body><h2>SPUS ETF is Shariah-compliant</h2></body></html>"""
+    security = Security("SPUS", asset_type=AssetType.ETF)
+    parsed = ZoyaScraper()._parse_content(
+        security, page, "https://zoya.finance/stocks/spus"
+    )
+    assert parsed.status == ComplianceStatus.HALAL
+    assert parsed.asset_type == AssetType.ETF
+    assert parsed.quote_type == "ETF"
+    assert parsed.evidence == "SPUS ETF is Shariah-compliant"
+
+
 def test_daleel_parses_stock_and_keeps_audit_evidence():
     payload = {
         "success": True,
