@@ -1,10 +1,8 @@
 """Tests for image parser optimizations."""
 
-import asyncio
 import hashlib
 import json
 import pytest
-import sqlite3
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add src to path
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from image_parser import (
@@ -19,12 +18,9 @@ from image_parser import (
     is_valid_ticker,
     parse_text_for_tickers,
     QuotaExceededError,
-    FALSE_POSITIVE_TICKERS,
-    MAX_RETRIES,
-    INITIAL_BACKOFF,
 )
 from database import ImageCache, init_database, get_connection
-from config import DATABASE_PATH, CACHE_TTL_HOURS
+from config import CACHE_TTL_HOURS
 
 
 class TestIsValidTicker:
@@ -74,11 +70,12 @@ class TestImageCache:
         import config
         import database
         import tempfile
+
         original_config_path = config.DATABASE_PATH
         original_db_path = database.DATABASE_PATH
 
         # Create a temporary database file
-        temp_db = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         config.DATABASE_PATH = temp_db.name
         database.DATABASE_PATH = temp_db.name
         temp_db.close()
@@ -90,9 +87,10 @@ class TestImageCache:
         config.DATABASE_PATH = original_config_path
         database.DATABASE_PATH = original_db_path
         import os
+
         try:
             os.unlink(temp_db.name)
-        except:
+        except OSError:
             pass
 
     def test_cache_set_and_get(self):
@@ -120,7 +118,9 @@ class TestImageCache:
         # Check raw database value
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT tickers FROM image_cache WHERE image_hash = ?", (image_hash,))
+            cursor.execute(
+                "SELECT tickers FROM image_cache WHERE image_hash = ?", (image_hash,)
+            )
             row = cursor.fetchone()
 
             # Should be JSON string
@@ -137,10 +137,12 @@ class TestImageCache:
         # Insert with expired timestamp
         with get_connection() as conn:
             cursor = conn.cursor()
-            expired_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS + 1)).isoformat()
+            expired_time = (
+                datetime.now() - timedelta(hours=CACHE_TTL_HOURS + 1)
+            ).isoformat()
             cursor.execute(
                 "INSERT INTO image_cache (image_hash, tickers, cached_at) VALUES (?, ?, ?)",
-                (image_hash, json.dumps(tickers), expired_time)
+                (image_hash, json.dumps(tickers), expired_time),
             )
 
         # Should return None and delete the entry
@@ -150,7 +152,9 @@ class TestImageCache:
         # Verify it was deleted
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM image_cache WHERE image_hash = ?", (image_hash,))
+            cursor.execute(
+                "SELECT COUNT(*) FROM image_cache WHERE image_hash = ?", (image_hash,)
+            )
             count = cursor.fetchone()[0]
             assert count == 0
 
@@ -162,10 +166,12 @@ class TestImageCache:
         # Add expired entry
         with get_connection() as conn:
             cursor = conn.cursor()
-            expired_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS + 1)).isoformat()
+            expired_time = (
+                datetime.now() - timedelta(hours=CACHE_TTL_HOURS + 1)
+            ).isoformat()
             cursor.execute(
                 "INSERT INTO image_cache (image_hash, tickers, cached_at) VALUES (?, ?, ?)",
-                ("expired_hash", json.dumps(["MSFT"]), expired_time)
+                ("expired_hash", json.dumps(["MSFT"]), expired_time),
             )
 
         # Clear expired
@@ -263,6 +269,11 @@ class TestParseTextForTickers:
         assert "AAPL" in result
         assert "MSFT" in result
 
+    def test_dotted_share_class_is_preserved(self):
+        result = parse_text_for_tickers("Compare $BRK.B with BRK.B today")
+
+        assert result == ["BRK.B"]
+
     def test_no_tickers(self):
         """Test empty result when no tickers found."""
         text = "This is just regular text with no tickers"
@@ -271,14 +282,13 @@ class TestParseTextForTickers:
         assert result == []
 
 
-@pytest.mark.asyncio
 class TestImageParserDailyRotation:
     """Test daily model rotation logic."""
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     def test_counter_resets_on_new_day(self, mock_client):
         """Test that request counter and exhausted models reset daily."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser()
 
             # Simulate some usage
@@ -292,10 +302,10 @@ class TestImageParserDailyRotation:
             assert len(parser._exhausted_models) == 0
             assert model == parser.models[0]  # Starts from first model
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     def test_round_robin_rotation(self, mock_client):
         """Test that models rotate round-robin per request."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser()
 
             models_picked = []
@@ -307,10 +317,10 @@ class TestImageParserDailyRotation:
             assert models_picked[:4] == parser.models
             assert models_picked[4:8] == parser.models
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     def test_skips_exhausted_models(self, mock_client):
         """Test that exhausted models are skipped in rotation."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser()
 
             # Set today's date so reset doesn't clear exhausted set
@@ -320,10 +330,10 @@ class TestImageParserDailyRotation:
             model = parser._get_next_model()
             assert model == parser.models[1]
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     def test_all_models_exhausted_returns_none(self, mock_client):
         """Test that None is returned when all models are exhausted."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser()
 
             parser._counter_date = time.strftime("%Y-%m-%d")
@@ -337,10 +347,10 @@ class TestImageParserDailyRotation:
 class TestImageParserRetryLogic:
     """Test retry and model rotation on errors."""
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     async def test_quota_error_rotates_to_next_model(self, mock_client):
         """Test that quota errors mark model exhausted and try next."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser()
 
             call_count = 0
@@ -363,10 +373,10 @@ class TestImageParserRetryLogic:
             # First two models should be marked exhausted
             assert len(parser._exhausted_models) == 2
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     async def test_all_models_exhausted_raises_quota_exceeded(self, mock_client):
         """Test that QuotaExceededError is raised when all models hit quota."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser()
 
             async def mock_generate(*args, **kwargs):
@@ -379,10 +389,10 @@ class TestImageParserRetryLogic:
 
             assert len(parser._exhausted_models) == len(parser.models)
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     async def test_non_quota_error_retries_with_backoff(self, mock_client):
         """Test that non-quota errors retry with exponential backoff on same model."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser()
 
             call_count = 0
@@ -409,10 +419,10 @@ class TestImageParserRetryLogic:
             # No models should be marked exhausted (not a quota error)
             assert len(parser._exhausted_models) == 0
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     async def test_non_quota_error_returns_empty_after_max_retries(self, mock_client):
         """Test that persistent non-quota errors return empty list."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser()
 
             async def mock_generate(*args, **kwargs):
@@ -435,11 +445,12 @@ class TestImageParserCacheIntegration:
         import config
         import database
         import tempfile
+
         original_config_path = config.DATABASE_PATH
         original_db_path = database.DATABASE_PATH
 
         # Create a temporary database file
-        temp_db = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         config.DATABASE_PATH = temp_db.name
         database.DATABASE_PATH = temp_db.name
         temp_db.close()
@@ -451,15 +462,16 @@ class TestImageParserCacheIntegration:
         config.DATABASE_PATH = original_config_path
         database.DATABASE_PATH = original_db_path
         import os
+
         try:
             os.unlink(temp_db.name)
-        except:
+        except OSError:
             pass
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     async def test_cache_hit_skips_api_call(self, mock_client):
         """Test that cache hit prevents API call."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser(image_cache=ImageCache)
 
             image_data = b"test image"
@@ -476,10 +488,10 @@ class TestImageParserCacheIntegration:
             assert result == ["AAPL", "MSFT"]
             mock_client.return_value.aio.models.generate_content.assert_not_called()
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     async def test_cache_miss_calls_api_and_caches(self, mock_client):
         """Test that cache miss calls API and stores result."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser(image_cache=ImageCache)
 
             # Mock successful API response
@@ -507,10 +519,10 @@ class TestImageParserCacheIntegration:
             cached = ImageCache.get(image_hash)
             assert cached == result
 
-    @patch('image_parser.genai.Client')
+    @patch("image_parser.genai.Client")
     async def test_parser_works_without_cache(self, mock_client):
         """Test that parser works when no cache is provided."""
-        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test_key'}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test_key"}):
             parser = ImageParser(image_cache=None)
 
             mock_response = MagicMock()

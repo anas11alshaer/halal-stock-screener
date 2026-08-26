@@ -6,10 +6,18 @@ Keep user-facing bullets. Internal refactors stay out unless they change how som
 
 ### Added
 
+- Configurable screening-provider, Gemini-reviewer, and delivery-channel plugins.
+- Free Daleel stock/ETF provider with SEC/holdings evidence and methodology caveats.
+- Company-name resolution, ETF detection, ambiguous-name handling, and dotted tickers.
+- Per-provider evidence URLs, operational failure states, and provisional results.
 - `d830bbb` docs: migrate to GitHub Flow on `main` — part of PR #2 (`709d632` Merge pull request #2 from anas11alshaer/docs/gitflow-master-template)
 
 ### Changed
 
+- Confirmed providers now use majority voting; tied votes resolve to Not Halal.
+- Cache/history storage is provider-neutral and retains evidence and failure metadata.
+- Network requests share connections and retry only transient failures.
+- Telegram is a replaceable adapter and displays each configured provider failure.
 - `d830bbb` docs: migrate to GitHub Flow on `main` — fix tags (`v0.02.00` → `v0.2.0`), remove `develop`/`release` branches (PR #2 `709d632`) — 2026-08-21
 - `2dfb7c2` chore: cleanup repo per new structure — remove `.claude/`, `.cursor/`, `CLAUDE.md`, `AGENTS.md`, `apps/`, `docs/` old vault, `pyproject.toml`, `LICENSE`, `README.md`, `REQUIREMENTS.md` to prepare regeneration (PR #3 `da0cf2e` Merge pull request #3 from anas11alshaer/chore/cleanup-repo) — 2026-08-21
 

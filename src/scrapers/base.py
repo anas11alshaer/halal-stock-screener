@@ -2,14 +2,14 @@
 
 import asyncio
 import logging
+import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
 
 import httpx
-import yfinance as yf
-
 from config import REQUEST_TIMEOUT, MAX_RETRIES
 
 logger = logging.getLogger(__name__)
@@ -24,32 +24,7 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# In-memory cache for quote types (ETF/EQUITY/etc.) — never changes for a ticker
-_quote_type_cache: dict[str, str] = {}
-
-
-async def get_quote_type(ticker: str) -> str:
-    """Return the yfinance quoteType for a ticker (e.g. 'ETF', 'EQUITY').
-
-    Results are cached in memory for the lifetime of the process.
-    Falls back to 'EQUITY' if yfinance cannot determine the type.
-    """
-    ticker = ticker.upper()
-    if ticker in _quote_type_cache:
-        return _quote_type_cache[ticker]
-
-    def _fetch() -> str:
-        try:
-            info = yf.Ticker(ticker).info
-            return info.get("quoteType", "EQUITY")
-        except Exception as e:
-            logger.warning(f"yfinance quote type lookup failed for {ticker}: {e}")
-            return "EQUITY"
-
-    quote_type = await asyncio.to_thread(_fetch)
-    _quote_type_cache[ticker] = quote_type
-    logger.debug(f"{ticker}: quoteType={quote_type}")
-    return quote_type
+TRANSIENT_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
 class ComplianceStatus(Enum):
@@ -60,6 +35,29 @@ class ComplianceStatus(Enum):
     DOUBTFUL = "DOUBTFUL"
     NOT_COVERED = "NOT_COVERED"
     ERROR = "ERROR"
+
+
+class AssetType(Enum):
+    """Canonical security types used by every provider."""
+
+    STOCK = "STOCK"
+    ETF = "ETF"
+    FUND = "FUND"
+    UNKNOWN = "UNKNOWN"
+
+
+class ResultState(Enum):
+    """Operational result independent from the compliance verdict."""
+
+    SUCCESS = "SUCCESS"
+    NOT_COVERED = "NOT_COVERED"
+    UNSUPPORTED_ASSET = "UNSUPPORTED_ASSET"
+    NETWORK_ERROR = "NETWORK_ERROR"
+    RATE_LIMITED = "RATE_LIMITED"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    PARSE_ERROR = "PARSE_ERROR"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+    IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
 
 
 STATUS_ICON: dict[ComplianceStatus, str] = {
@@ -91,10 +89,61 @@ class ScreeningResult:
     details: Optional[str] = None
     error_message: Optional[str] = None
     quote_type: Optional[str] = None
+    state: ResultState = ResultState.SUCCESS
+    asset_type: AssetType = AssetType.UNKNOWN
+    url: Optional[str] = None
+    evidence: Optional[str] = None
+    methodology: Optional[str] = None
+    checked_at: Optional[str] = None
+    retrieval_method: str = "deterministic"
+    is_provisional: bool = False
+    confirmation_count: int = 0
+    review_text: Optional[str] = None
+
+    @property
+    def is_confirmed(self) -> bool:
+        return self.state == ResultState.SUCCESS and self.status in {
+            ComplianceStatus.HALAL,
+            ComplianceStatus.NOT_HALAL,
+            ComplianceStatus.DOUBTFUL,
+        }
+
+
+@dataclass
+class Security:
+    """Provider-neutral identity resolved before screening."""
+
+    symbol: str
+    name: Optional[str] = None
+    asset_type: AssetType = AssetType.UNKNOWN
+    exchange: Optional[str] = None
+    yahoo_symbol: Optional[str] = None
+
+    @property
+    def quote_type(self) -> str:
+        return {
+            AssetType.STOCK: "EQUITY",
+            AssetType.ETF: "ETF",
+            AssetType.FUND: "MUTUALFUND",
+        }.get(self.asset_type, "UNKNOWN")
+
+
+async def get_quote_type(ticker: str) -> str:
+    """Compatibility wrapper around the reliable Yahoo search resolver."""
+    from security_resolver import YahooSecurityResolver
+
+    resolved = await YahooSecurityResolver().resolve(ticker)
+    if resolved.security:
+        return resolved.security.quote_type
+    return "UNKNOWN"
 
 
 class BaseScraper(ABC):
     """Abstract base for stock compliance scrapers with shared retry logic."""
+
+    supported_asset_types = frozenset(
+        {AssetType.STOCK, AssetType.ETF, AssetType.FUND, AssetType.UNKNOWN}
+    )
 
     @property
     @abstractmethod
@@ -102,73 +151,180 @@ class BaseScraper(ABC):
         """Short identifier used in logs and ScreeningResult.source (e.g. 'musaffa')."""
 
     @abstractmethod
-    async def _fetch_single(self, client: httpx.AsyncClient, ticker: str) -> ScreeningResult:
-        """Fetch and parse a single ticker. Subclasses implement site-specific logic."""
+    async def _fetch_single(
+        self, client: httpx.AsyncClient, security: Security
+    ) -> ScreeningResult:
+        """Fetch and parse one resolved security."""
 
     # ------------------------------------------------------------------
     # Public API (shared retry / parallel logic)
     # ------------------------------------------------------------------
 
+    def supports(self, security: Security) -> bool:
+        return security.asset_type in self.supported_asset_types
+
+    async def screen_security(self, security: Security) -> ScreeningResult:
+        """Screen one security using a reusable HTTP client."""
+        return (await self.screen_securities([security]))[0]
+
     async def screen_ticker(self, ticker: str) -> ScreeningResult:
-        """Screen a single ticker with retry logic."""
+        """Compatibility API for callers that have not resolved metadata."""
         ticker = ticker.upper().strip()
-        logger.info(f"Screening {ticker} on {self.source_name}")
-
-        for attempt in range(MAX_RETRIES):
-            try:
-                async with httpx.AsyncClient(
-                    headers=DEFAULT_HEADERS,
-                    timeout=REQUEST_TIMEOUT,
-                    follow_redirects=True,
-                ) as client:
-                    return await self._fetch_single(client, ticker)
-            except Exception as e:
-                logger.warning(
-                    f"Error screening {ticker} on {self.source_name} "
-                    f"(attempt {attempt + 1}): {e}"
-                )
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(2 ** attempt)
-
-        return ScreeningResult(
-            ticker=ticker,
-            status=ComplianceStatus.ERROR,
-            source=self.source_name,
-            error_message="Failed to fetch data after multiple attempts",
-        )
+        return await self.screen_security(Security(symbol=ticker))
 
     async def screen_multiple(self, tickers: list[str]) -> list[ScreeningResult]:
-        """Screen multiple tickers in parallel with per-ticker retry."""
-        if not tickers:
-            return []
+        securities = [Security(symbol=ticker.upper().strip()) for ticker in tickers]
+        return await self.screen_securities(securities)
 
-        source = self.source_name
+    async def screen_securities(
+        self, securities: list[Security]
+    ) -> list[ScreeningResult]:
+        """Screen securities concurrently while sharing connections."""
+        if not securities:
+            return []
 
         async with httpx.AsyncClient(
             headers=DEFAULT_HEADERS,
             timeout=REQUEST_TIMEOUT,
             follow_redirects=True,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         ) as client:
+            results = await asyncio.gather(
+                *(self._screen_safe(client, security) for security in securities)
+            )
+        return list(results)
 
-            async def fetch_with_retry(t: str) -> tuple[str, ScreeningResult]:
-                for attempt in range(MAX_RETRIES):
-                    try:
-                        result = await self._fetch_single(client, t)
-                        return (t, result)
-                    except Exception as e:
-                        logger.warning(f"Error screening {t} (attempt {attempt + 1}): {e}")
-                        if attempt < MAX_RETRIES - 1:
-                            await asyncio.sleep(2 ** attempt)
-                return (t, ScreeningResult(
-                    ticker=t,
-                    status=ComplianceStatus.ERROR,
-                    source=source,
-                    error_message="Failed to fetch data",
-                ))
+    async def _screen_safe(
+        self, client: httpx.AsyncClient, security: Security
+    ) -> ScreeningResult:
+        if not self.supports(security):
+            return self.failure(
+                security,
+                ResultState.UNSUPPORTED_ASSET,
+                f"{self.source_name} does not support {security.asset_type.value}",
+            )
+        logger.info("Screening %s on %s", security.symbol, self.source_name)
+        try:
+            result = await self._fetch_single(client, security)
+            result.checked_at = result.checked_at or datetime.now(UTC).isoformat()
+            result.asset_type = (
+                security.asset_type
+                if result.asset_type == AssetType.UNKNOWN
+                else result.asset_type
+            )
+            result.quote_type = result.quote_type or security.quote_type
+            result.company_name = result.company_name or security.name
+            return result
+        except httpx.TimeoutException:
+            return self.failure(
+                security, ResultState.NETWORK_ERROR, "Request timed out"
+            )
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "%s request failed for %s: %s", self.source_name, security.symbol, exc
+            )
+            return self.failure(
+                security, ResultState.NETWORK_ERROR, "Network request failed"
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected %s failure for %s", self.source_name, security.symbol
+            )
+            return self.failure(
+                security, ResultState.SOURCE_UNAVAILABLE, "Provider failed unexpectedly"
+            )
 
-            tasks = [fetch_with_retry(t) for t in tickers]
-            completed = await asyncio.gather(*tasks)
+    async def request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        **kwargs,
+    ) -> httpx.Response:
+        """Perform one HTTP request with bounded transient retries."""
+        last_error: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = await client.request(method, url, **kwargs)
+                if response.status_code not in TRANSIENT_STATUS_CODES:
+                    return response
+                if attempt == MAX_RETRIES - 1:
+                    return response
+                retry_after = response.headers.get("Retry-After")
+                delay = self._retry_delay(attempt, retry_after)
+                logger.warning(
+                    "%s returned HTTP %d for %s; retrying in %.2fs",
+                    self.source_name,
+                    response.status_code,
+                    url,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                last_error = exc
+                if attempt == MAX_RETRIES - 1:
+                    raise
+                await asyncio.sleep(self._retry_delay(attempt, None))
+        if last_error:
+            raise last_error
+        raise RuntimeError("Request retry loop ended without a response")
 
-        results = {ticker: result for ticker, result in completed}
-        return [results[t] for t in tickers]
+    @staticmethod
+    def _retry_delay(attempt: int, retry_after: str | None) -> float:
+        if retry_after:
+            try:
+                return min(float(retry_after), 30.0)
+            except ValueError:
+                pass
+        return min(2**attempt + random.uniform(0, 0.25), 8.0)
 
+    def failure(
+        self,
+        security: Security,
+        state: ResultState,
+        message: str,
+        *,
+        url: str | None = None,
+        status: ComplianceStatus = ComplianceStatus.ERROR,
+    ) -> ScreeningResult:
+        return ScreeningResult(
+            ticker=security.symbol,
+            status=status,
+            source=self.source_name,
+            company_name=security.name,
+            quote_type=security.quote_type,
+            asset_type=security.asset_type,
+            state=state,
+            error_message=message,
+            url=url,
+            checked_at=datetime.now(UTC).isoformat(),
+        )
+
+    def http_failure(
+        self, security: Security, response: httpx.Response, url: str
+    ) -> ScreeningResult:
+        if response.status_code == 404:
+            return self.failure(
+                security,
+                ResultState.NOT_COVERED,
+                "Security not found",
+                url=url,
+                status=ComplianceStatus.NOT_COVERED,
+            )
+        if response.status_code in (401, 403):
+            return self.failure(
+                security, ResultState.AUTH_REQUIRED, "Authentication required", url=url
+            )
+        if response.status_code == 429:
+            return self.failure(
+                security,
+                ResultState.RATE_LIMITED,
+                "Provider rate limit reached",
+                url=url,
+            )
+        return self.failure(
+            security,
+            ResultState.SOURCE_UNAVAILABLE,
+            f"Provider returned HTTP {response.status_code}",
+            url=url,
+        )

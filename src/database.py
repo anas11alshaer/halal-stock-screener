@@ -7,7 +7,12 @@ from typing import Optional
 from contextlib import contextmanager
 import logging
 
-from config import DATABASE_PATH, CACHE_TTL_HOURS
+from config import (
+    CACHE_SCHEMA_VERSION,
+    CACHE_TTL_HOURS,
+    DATABASE_PATH,
+    NOT_COVERED_CACHE_TTL_HOURS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +68,25 @@ def _migrate_database(conn):
 
         logger.info("Cache table migration completed")
 
+    cursor.execute("PRAGMA table_info(cache)")
+    cache_columns = {row[1] for row in cursor.fetchall()}
+    cache_additions = {
+        "company_name": "TEXT",
+        "error_message": "TEXT",
+        "quote_type": "TEXT",
+        "state": "TEXT NOT NULL DEFAULT 'SUCCESS'",
+        "asset_type": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+        "url": "TEXT",
+        "evidence": "TEXT",
+        "methodology": "TEXT",
+        "retrieval_method": "TEXT NOT NULL DEFAULT 'deterministic'",
+        "checked_at": "TEXT",
+        "schema_version": "INTEGER NOT NULL DEFAULT 1",
+    }
+    for column, definition in cache_additions.items():
+        if column not in cache_columns:
+            cursor.execute(f"ALTER TABLE cache ADD COLUMN {column} {definition}")
+
     # Check if checks table needs migration
     cursor.execute("PRAGMA table_info(checks)")
     checks_columns = {row[1] for row in cursor.fetchall()}
@@ -106,6 +130,17 @@ def _migrate_database(conn):
 
         logger.info("Checks table migration completed")
 
+    cursor.execute("PRAGMA table_info(checks)")
+    checks_columns = {row[1] for row in cursor.fetchall()}
+    checks_additions = {
+        "provider_results": "TEXT",
+        "is_provisional": "BOOLEAN NOT NULL DEFAULT 0",
+        "confirmation_count": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, definition in checks_additions.items():
+        if column not in checks_columns:
+            cursor.execute(f"ALTER TABLE checks ADD COLUMN {column} {definition}")
+
 
 def init_database():
     """Initialize database tables."""
@@ -120,6 +155,17 @@ def init_database():
                 status TEXT NOT NULL,
                 compliance_ranking TEXT,
                 details TEXT,
+                company_name TEXT,
+                error_message TEXT,
+                quote_type TEXT,
+                state TEXT NOT NULL DEFAULT 'SUCCESS',
+                asset_type TEXT NOT NULL DEFAULT 'UNKNOWN',
+                url TEXT,
+                evidence TEXT,
+                methodology TEXT,
+                retrieval_method TEXT NOT NULL DEFAULT 'deterministic',
+                checked_at TEXT,
+                schema_version INTEGER NOT NULL DEFAULT 2,
                 cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (ticker, source)
             )
@@ -144,6 +190,9 @@ def init_database():
                 zoya_status TEXT,
                 final_status TEXT NOT NULL,
                 is_conflict BOOLEAN DEFAULT 0,
+                provider_results TEXT,
+                is_provisional BOOLEAN NOT NULL DEFAULT 0,
+                confirmation_count INTEGER NOT NULL DEFAULT 0,
                 checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -174,19 +223,33 @@ class TickerCache:
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM cache WHERE ticker = ? AND source = ?",
-                (ticker, source)
+                "SELECT * FROM cache WHERE ticker = ? AND source = ?", (ticker, source)
             )
             row = cursor.fetchone()
 
             if row is None:
                 return None
 
+            if row["schema_version"] != CACHE_SCHEMA_VERSION:
+                cursor.execute(
+                    "DELETE FROM cache WHERE ticker = ? AND source = ?",
+                    (ticker, source),
+                )
+                return None
+
             # Check if cache has expired
             cached_at = datetime.fromisoformat(row["cached_at"])
-            if datetime.now() - cached_at > timedelta(hours=CACHE_TTL_HOURS):
+            ttl_hours = (
+                NOT_COVERED_CACHE_TTL_HOURS
+                if row["status"] == "NOT_COVERED"
+                else CACHE_TTL_HOURS
+            )
+            if datetime.now() - cached_at > timedelta(hours=ttl_hours):
                 # Cache expired, delete it
-                cursor.execute("DELETE FROM cache WHERE ticker = ? AND source = ?", (ticker, source))
+                cursor.execute(
+                    "DELETE FROM cache WHERE ticker = ? AND source = ?",
+                    (ticker, source),
+                )
                 return None
 
             return {
@@ -195,21 +258,72 @@ class TickerCache:
                 "status": row["status"],
                 "compliance_ranking": row["compliance_ranking"],
                 "details": row["details"],
+                "company_name": row["company_name"],
+                "error_message": row["error_message"],
+                "quote_type": row["quote_type"],
+                "state": row["state"],
+                "asset_type": row["asset_type"],
+                "url": row["url"],
+                "evidence": row["evidence"],
+                "methodology": row["methodology"],
+                "retrieval_method": row["retrieval_method"],
+                "checked_at": row["checked_at"],
+                "schema_version": row["schema_version"],
                 "cached_at": row["cached_at"],
-                "from_cache": True
+                "from_cache": True,
             }
 
     @staticmethod
-    def set(ticker: str, status: str, source: str = "musaffa",
-            compliance_ranking: str = None, details: str = None):
+    def set(
+        ticker: str,
+        status: str,
+        source: str,
+        compliance_ranking: str = None,
+        details: str = None,
+        company_name: str = None,
+        error_message: str = None,
+        quote_type: str = None,
+        state: str = "SUCCESS",
+        asset_type: str = "UNKNOWN",
+        url: str = None,
+        evidence: str = None,
+        methodology: str = None,
+        retrieval_method: str = "deterministic",
+        checked_at: str = None,
+    ):
         """Cache a ticker result for a specific source."""
         ticker = ticker.upper()
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR REPLACE INTO cache (ticker, source, status, compliance_ranking, details, cached_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (ticker, source, status, compliance_ranking, details, datetime.now().isoformat()))
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO cache (
+                    ticker, source, status, compliance_ranking, details,
+                    company_name, error_message, quote_type, state, asset_type,
+                    url, evidence, methodology, retrieval_method, checked_at,
+                    cached_at, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    ticker,
+                    source,
+                    status,
+                    compliance_ranking,
+                    details,
+                    company_name,
+                    error_message,
+                    quote_type,
+                    state,
+                    asset_type,
+                    url,
+                    evidence,
+                    methodology,
+                    retrieval_method,
+                    checked_at,
+                    datetime.now().isoformat(),
+                    CACHE_SCHEMA_VERSION,
+                ),
+            )
             logger.debug(f"Cached result for {ticker} from {source}")
 
     @staticmethod
@@ -219,7 +333,10 @@ class TickerCache:
         with get_connection() as conn:
             cursor = conn.cursor()
             if source:
-                cursor.execute("DELETE FROM cache WHERE ticker = ? AND source = ?", (ticker, source))
+                cursor.execute(
+                    "DELETE FROM cache WHERE ticker = ? AND source = ?",
+                    (ticker, source),
+                )
             else:
                 cursor.execute("DELETE FROM cache WHERE ticker = ?", (ticker,))
 
@@ -228,11 +345,10 @@ class TickerCache:
         """Remove all expired cache entries."""
         with get_connection() as conn:
             cursor = conn.cursor()
-            expiry_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS)).isoformat()
-            cursor.execute(
-                "DELETE FROM cache WHERE cached_at < ?",
-                (expiry_time,)
-            )
+            expiry_time = (
+                datetime.now() - timedelta(hours=CACHE_TTL_HOURS)
+            ).isoformat()
+            cursor.execute("DELETE FROM cache WHERE cached_at < ?", (expiry_time,))
             deleted = cursor.rowcount
             if deleted > 0:
                 logger.info(f"Cleared {deleted} expired cache entries")
@@ -242,31 +358,62 @@ class CheckHistory:
     """Historical tracking for user checks."""
 
     @staticmethod
-    def record(user_id: int, ticker: str, final_status: str,
-               musaffa_status: str = None, zoya_status: str = None,
-               is_conflict: bool = False):
+    def record(
+        user_id: int,
+        ticker: str,
+        final_status: str,
+        provider_results: dict | None = None,
+        is_conflict: bool = False,
+        is_provisional: bool = False,
+        confirmation_count: int = 0,
+        musaffa_status: str = None,
+        zoya_status: str = None,
+    ):
         """Record a check in history with multi-source support."""
         ticker = ticker.upper()
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO checks (user_id, ticker, musaffa_status, zoya_status, final_status, is_conflict)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (user_id, ticker, musaffa_status, zoya_status, final_status, 1 if is_conflict else 0))
-            logger.debug(f"Recorded check: user={user_id}, ticker={ticker}, conflict={is_conflict}")
+            serialized = json.dumps(provider_results or {}, separators=(",", ":"))
+            cursor.execute(
+                """
+                INSERT INTO checks (
+                    user_id, ticker, musaffa_status, zoya_status, final_status,
+                    is_conflict, provider_results, is_provisional, confirmation_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    user_id,
+                    ticker,
+                    musaffa_status,
+                    zoya_status,
+                    final_status,
+                    1 if is_conflict else 0,
+                    serialized,
+                    1 if is_provisional else 0,
+                    confirmation_count,
+                ),
+            )
+            logger.debug(
+                f"Recorded check: user={user_id}, ticker={ticker}, conflict={is_conflict}"
+            )
 
     @staticmethod
     def get_user_history(user_id: int, limit: int = 20) -> list:
         """Get recent checks for a user."""
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT ticker, final_status as status, musaffa_status, zoya_status, is_conflict, checked_at
+            cursor.execute(
+                """
+                SELECT ticker, final_status as status, musaffa_status, zoya_status,
+                       is_conflict, is_provisional, confirmation_count,
+                       provider_results, checked_at
                 FROM checks
                 WHERE user_id = ?
                 ORDER BY checked_at DESC
                 LIMIT ?
-            """, (user_id, limit))
+            """,
+                (user_id, limit),
+            )
             return [dict(row) for row in cursor.fetchall()]
 
     @staticmethod
@@ -276,32 +423,32 @@ class CheckHistory:
             cursor = conn.cursor()
 
             # Total checks
-            cursor.execute(
-                "SELECT COUNT(*) FROM checks WHERE user_id = ?",
-                (user_id,)
-            )
+            cursor.execute("SELECT COUNT(*) FROM checks WHERE user_id = ?", (user_id,))
             total = cursor.fetchone()[0]
 
             # Unique tickers
             cursor.execute(
                 "SELECT COUNT(DISTINCT ticker) FROM checks WHERE user_id = ?",
-                (user_id,)
+                (user_id,),
             )
             unique_tickers = cursor.fetchone()[0]
 
             # Status breakdown (using final_status)
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT final_status as status, COUNT(*) as count
                 FROM checks
                 WHERE user_id = ?
                 GROUP BY final_status
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
             status_counts = {row["status"]: row["count"] for row in cursor.fetchall()}
 
             # Conflict count
             cursor.execute(
                 "SELECT COUNT(*) FROM checks WHERE user_id = ? AND is_conflict = 1",
-                (user_id,)
+                (user_id,),
             )
             conflict_count = cursor.fetchone()[0]
 
@@ -309,7 +456,7 @@ class CheckHistory:
                 "total_checks": total,
                 "unique_tickers": unique_tickers,
                 "status_breakdown": status_counts,
-                "conflict_count": conflict_count
+                "conflict_count": conflict_count,
             }
 
 
@@ -323,7 +470,7 @@ class ImageCache:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT tickers, cached_at FROM image_cache WHERE image_hash = ?",
-                (image_hash,)
+                (image_hash,),
             )
             row = cursor.fetchone()
 
@@ -333,7 +480,9 @@ class ImageCache:
             # Check if cache has expired (same TTL as ticker cache)
             cached_at = datetime.fromisoformat(row["cached_at"])
             if datetime.now() - cached_at > timedelta(hours=CACHE_TTL_HOURS):
-                cursor.execute("DELETE FROM image_cache WHERE image_hash = ?", (image_hash,))
+                cursor.execute(
+                    "DELETE FROM image_cache WHERE image_hash = ?", (image_hash,)
+                )
                 return None
 
             # Parse JSON list of tickers
@@ -347,21 +496,27 @@ class ImageCache:
         """Cache extracted tickers for an image hash."""
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT OR REPLACE INTO image_cache (image_hash, tickers, cached_at)
                 VALUES (?, ?, ?)
-            """, (image_hash, json.dumps(tickers), datetime.now().isoformat()))
-            logger.debug(f"Cached {len(tickers)} tickers for image hash {image_hash[:8]}...")
+            """,
+                (image_hash, json.dumps(tickers), datetime.now().isoformat()),
+            )
+            logger.debug(
+                f"Cached {len(tickers)} tickers for image hash {image_hash[:8]}..."
+            )
 
     @staticmethod
     def clear_expired():
         """Remove all expired image cache entries."""
         with get_connection() as conn:
             cursor = conn.cursor()
-            expiry_time = (datetime.now() - timedelta(hours=CACHE_TTL_HOURS)).isoformat()
+            expiry_time = (
+                datetime.now() - timedelta(hours=CACHE_TTL_HOURS)
+            ).isoformat()
             cursor.execute(
-                "DELETE FROM image_cache WHERE cached_at < ?",
-                (expiry_time,)
+                "DELETE FROM image_cache WHERE cached_at < ?", (expiry_time,)
             )
             deleted = cursor.rowcount
             if deleted > 0:

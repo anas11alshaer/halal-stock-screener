@@ -13,7 +13,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: pip install ruff pytest pytest-asyncio
-      - run: ruff check . || true
+      - run: ruff check .
       - run: pytest -o asyncio_mode=auto
         env:
           GEMINI_API_KEY: test_key
