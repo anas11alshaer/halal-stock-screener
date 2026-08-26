@@ -12,6 +12,7 @@ from google import genai
 from google.genai import types
 
 from config import GEMINI_API_KEY, GEMINI_MODELS
+from image_extractors import ImageExtractionQuotaError, ImageExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +105,10 @@ def is_valid_ticker(ticker: str) -> bool:
     return ticker not in FALSE_POSITIVE_TICKERS
 
 
-class QuotaExceededError(Exception):
-    """Raised when Gemini API quota is exceeded."""
-
-    pass
+QuotaExceededError = ImageExtractionQuotaError
 
 
-class ImageParser:
+class GeminiImageExtractor(ImageExtractor):
     """Parse images to extract stock tickers using Gemini with daily model rotation."""
 
     def __init__(self, image_cache=None):
@@ -191,6 +189,7 @@ class ImageParser:
 Stock tickers are typically:
 - 1-5 uppercase letters (e.g., AAPL, MSFT, GOOGL, META, TSLA)
 - Sometimes followed by exchange suffixes (e.g., AAPL.US, MSFT.NASDAQ)
+- Share classes can contain a meaningful dot (e.g., BRK.B). Preserve that dot.
 
 Return your response as a JSON object with this exact format:
 {
@@ -207,11 +206,13 @@ If no tickers are found, return:
 }
 
 Only include actual stock ticker symbols, not random text or abbreviations.
-Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AAPL.US")."""
+Remove known exchange suffixes, but preserve share-class dots such as BRK.B."""
 
         model = self._get_next_model()
         if model is None:
-            raise QuotaExceededError("All models exhausted for today. Try again tomorrow.")
+            raise QuotaExceededError(
+                "All models exhausted for today. Try again tomorrow."
+            )
 
         while model is not None:
             logger.info(f"Using model: {model}")
@@ -228,6 +229,9 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                         config=types.GenerateContentConfig(
                             temperature=0.1,
                             max_output_tokens=256,
+                            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                                disable=True
+                            ),
                         ),
                     )
 
@@ -251,10 +255,17 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                 except Exception as e:
                     error_str = str(e).lower()
 
-                    is_quota_error = any(x in error_str for x in [
-                        "429", "quota", "rate limit", "resource exhausted",
-                        "too many requests", "limit exceeded"
-                    ])
+                    is_quota_error = any(
+                        x in error_str
+                        for x in [
+                            "429",
+                            "quota",
+                            "rate limit",
+                            "resource exhausted",
+                            "too many requests",
+                            "limit exceeded",
+                        ]
+                    )
 
                     if is_quota_error:
                         logger.warning(f"Model {model} quota hit, marking exhausted")
@@ -266,7 +277,7 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                         f"Gemini error ({model}, attempt {attempt + 1}/{MAX_RETRIES}): {e}"
                     )
                     if attempt < MAX_RETRIES - 1:
-                        await asyncio.sleep(INITIAL_BACKOFF * (2 ** attempt))
+                        await asyncio.sleep(INITIAL_BACKOFF * (2**attempt))
                         continue
                     logger.error(f"Error extracting tickers: {e}")
                     return []
@@ -310,9 +321,13 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
                 if cleaned and is_valid_ticker(cleaned):
                     valid_tickers.append(cleaned)
                 elif cleaned:
-                    logger.debug(f"Ticker '{ticker}' -> '{cleaned}' filtered out by validation")
+                    logger.debug(
+                        f"Ticker '{ticker}' -> '{cleaned}' filtered out by validation"
+                    )
 
-            logger.info(f"Extracted {len(valid_tickers)} valid tickers: {valid_tickers}")
+            logger.info(
+                f"Extracted {len(valid_tickers)} valid tickers: {valid_tickers}"
+            )
             return valid_tickers
 
         except json.JSONDecodeError as e:
@@ -335,7 +350,7 @@ Remove any exchange suffixes - just return the base ticker (e.g., "AAPL" not "AA
 
     def _extract_tickers_regex(self, text: str) -> list[str]:
         """Fallback method to extract tickers using regex."""
-        potential = re.findall(r"\b([A-Z]{1,5})\b", text)
+        potential = re.findall(r"\b([A-Z]{1,5}(?:\.[A-Z])?)\b", text)
 
         valid_tickers = []
         for ticker in potential:
@@ -363,14 +378,14 @@ def parse_text_for_tickers(text: str) -> list[str]:
     tickers = []
 
     # First, look for cashtags (most reliable)
-    cashtags = re.findall(r"\$([A-Za-z]{1,5})\b", text)
+    cashtags = re.findall(r"\$([A-Za-z]{1,5}(?:\.[A-Za-z])?)\b", text)
     tickers.extend([t.upper() for t in cashtags])
 
     # Then look for standalone uppercase sequences that look like tickers
     words = text.split()
     for word in words:
-        cleaned = re.sub(r"[^\w]", "", word)
-        if cleaned.isupper() and 1 <= len(cleaned) <= 5 and cleaned.isalpha():
+        cleaned = re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9.]+$", "", word)
+        if cleaned.isupper() and is_valid_ticker(cleaned):
             tickers.append(cleaned)
 
     # Validate and deduplicate
@@ -382,3 +397,7 @@ def parse_text_for_tickers(text: str) -> list[str]:
             valid_tickers.append(ticker)
 
     return valid_tickers
+
+
+# Compatibility for existing imports and cached deployments.
+ImageParser = GeminiImageExtractor

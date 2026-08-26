@@ -12,6 +12,7 @@ Light vault for halal-stock-screener. ADR drawer is the only long-lived docs art
   - `0005-gemini-model-rotation.md`
   - `0006-dockerfile-healthcheck.md`
   - `0007-github-flow-on-main.md`
+  - `0008-modular-multi-provider-screening.md`
 - `planning/` — Deferred large-change plans (not yet built)
   - `2026-08-21-vercel-modular-future.md` — Vercel + plugin architecture, src/tests pack shape
 - `CHANGELOG.md` at repo root (not here) — user-facing history
