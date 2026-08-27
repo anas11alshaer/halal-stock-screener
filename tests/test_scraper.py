@@ -244,3 +244,17 @@ def test_shared_transport_does_not_retry_404(monkeypatch):
     response = asyncio.run(run())
     assert response.status_code == 404
     assert attempts == 1
+
+
+def test_http_402_is_reported_as_provider_quota():
+    request = httpx.Request("GET", "https://example.test/screen")
+    response = httpx.Response(402, request=request)
+
+    result = DaleelProvider().http_failure(
+        Security("AAPL", asset_type=AssetType.STOCK),
+        response,
+        str(request.url),
+    )
+
+    assert result.state == ResultState.RATE_LIMITED
+    assert result.error_message == "Provider quota reached"

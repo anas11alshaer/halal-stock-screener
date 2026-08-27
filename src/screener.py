@@ -96,6 +96,8 @@ class ScreenResponse:
 
         lines.extend(["", "<b>Sources</b>"])
         for provider_id, provider_result in self.source_results.get(result.ticker, {}).items():
+            if provider_result.state == ResultState.RATE_LIMITED:
+                continue
             display_name = html.escape(provider_id.replace("_", " ").title())
             if provider_result.is_confirmed:
                 provider_icon = STATUS_ICON.get(provider_result.status, "❓")
@@ -130,6 +132,8 @@ class ScreenResponse:
             )
             source_parts = []
             for provider_id, provider_result in self.source_results.get(result.ticker, {}).items():
+                if provider_result.state == ResultState.RATE_LIMITED:
+                    continue
                 if provider_result.is_confirmed:
                     value = STATUS_TEXT.get(provider_result.status, "Unknown")
                 else:

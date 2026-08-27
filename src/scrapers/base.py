@@ -299,6 +299,13 @@ class BaseScraper(ABC):
             return self.failure(
                 security, ResultState.AUTH_REQUIRED, "Authentication required", url=url
             )
+        if response.status_code == 402:
+            return self.failure(
+                security,
+                ResultState.RATE_LIMITED,
+                "Provider quota reached",
+                url=url,
+            )
         if response.status_code == 429:
             return self.failure(
                 security,

@@ -104,6 +104,37 @@ def test_output_shows_success_failure_and_provisional_state():
     assert "Zoya</b>: Unsupported asset" in message
 
 
+def test_output_hides_sources_that_reached_their_call_limit():
+    final = ScreeningResult(
+        ticker="AAPL",
+        status=ComplianceStatus.HALAL,
+        source="combined",
+        confirmation_count=1,
+    )
+    success = ScreeningResult(
+        ticker="AAPL",
+        status=ComplianceStatus.HALAL,
+        source="daleel",
+    )
+    limited = ScreeningResult(
+        ticker="AAPL",
+        status=ComplianceStatus.ERROR,
+        source="halal_screener",
+        state=ResultState.RATE_LIMITED,
+        error_message="Provider quota reached",
+    )
+
+    message = ScreenResponse(
+        [final],
+        [False],
+        source_results={"AAPL": {"daleel": success, "halal_screener": limited}},
+    ).format_message()
+
+    assert "Daleel" in message
+    assert "Halal Screener" not in message
+    assert "quota" not in message.lower()
+
+
 def test_large_multi_result_output_is_split_on_result_boundaries():
     results = [
         ScreeningResult(
