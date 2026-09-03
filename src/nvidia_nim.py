@@ -1,4 +1,4 @@
-"""NVIDIA NIM client for the image-model bake-off (eval only)."""
+"""NVIDIA NIM client for eval bake-off (VLM/OCR + JSON chat)."""
 
 from __future__ import annotations
 
@@ -23,6 +23,9 @@ _EVAL_TICKER = re.compile(
 )
 
 logger = logging.getLogger(__name__)
+
+SCREENSHOT_JOB = "screenshot_tickers"
+_TABLE_HEADER_LINE = re.compile(r"(?m)^[ \t]*\[")
 
 
 class NimError(Exception):
@@ -198,6 +201,39 @@ class NvidiaNimClient:
                 response.status_code, f"unexpected VLM payload: {exc}"
             ) from exc
 
+    async def chat_text(
+        self,
+        *,
+        model_id: str,
+        prompt: str,
+        max_tokens: int = 2048,
+        url: str | None = None,
+    ) -> str:
+        """JSON chat completions. Default max_tokens=2048 (VLM 512 is too small for segments)."""
+        endpoint = url or str(self._policy.get("nvidia", "chat_url"))
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        response = await self._http.post(
+            endpoint, headers=self._auth_headers(), json=payload
+        )
+        if response.status_code == 429:
+            raise NimError(429, f"{model_id} rate limited")
+        if response.status_code >= 400:
+            raise NimError(response.status_code, response.text[:500])
+        body = response.json()
+        try:
+            return str(body["choices"][0]["message"]["content"])
+        except (KeyError, IndexError, TypeError) as exc:
+            raise NimError(
+                response.status_code, f"unexpected chat payload: {exc}"
+            ) from exc
+
     async def ocr(
         self,
         *,
@@ -305,7 +341,7 @@ async def run_bakeoff(
             score.mean_jaccard = sum(jaccards) / len(jaccards)
         scores.append(score)
 
-    # Only error-free models may be written as winner / 429 fallback.
+    # Partial HTTP scores must not become policy defaults.
     ranked = sorted(
         [s for s in scores if s.errors == 0 and s.fixtures > 0],
         key=lambda s: (s.mean_jaccard, s.exact_matches),
@@ -317,24 +353,58 @@ async def run_bakeoff(
     return BakeoffResult(scores=scores, winner=winner, fallback_429=fallback)
 
 
-def write_nvidia_winner(policy_path: Path, winner: str, fallback: str) -> None:
-    """Patch winner / fallback_429 in the TOML policy. Does not invent a winner."""
-    text = policy_path.read_text(encoding="utf-8")
-    text, n1 = re.subn(
-        r"(?m)^(winner\s*=\s*)\".*\"",
-        rf'\1"{winner}"',
-        text,
+def _toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _table_body_span(text: str, header: str) -> tuple[int, int]:
+    header_re = re.compile(rf"(?m)^[ \t]*{re.escape(header)}[ \t]*(?:#[^\n]*)?\r?\n")
+    match = header_re.search(text)
+    if match is None:
+        raise ValueError(f"Could not find table {header}")
+    start = match.end()
+    nxt = _TABLE_HEADER_LINE.search(text, start)
+    end = nxt.start() if nxt else len(text)
+    return start, end
+
+
+def _patch_table_winner(text: str, header: str, winner: str, fallback: str) -> str:
+    start, end = _table_body_span(text, header)
+    body = text[start:end]
+    body, n1 = re.subn(
+        r'(?m)^(winner\s*=\s*)".*"',
+        rf'\1"{_toml_escape(winner)}"',
+        body,
         count=1,
     )
-    text, n2 = re.subn(
-        r"(?m)^(fallback_429\s*=\s*)\".*\"",
-        rf'\1"{fallback}"',
-        text,
+    body, n2 = re.subn(
+        r'(?m)^(fallback_429\s*=\s*)".*"',
+        rf'\1"{_toml_escape(fallback)}"',
+        body,
         count=1,
     )
     if n1 != 1 or n2 != 1:
-        raise ValueError(f"Could not patch nvidia winner fields in {policy_path}")
+        raise ValueError(f"Could not patch nvidia winner fields in {header}")
+    return text[:start] + body + text[end:]
+
+
+def write_job_winner(policy_path: Path, job: str, winner: str, fallback: str) -> None:
+    """Patch winner/fallback_429 only inside [nvidia.jobs.<job>]; fail if missing.
+
+    screenshot_tickers also updates top-level [nvidia] as the screenshot alias.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_]+", job):
+        raise ValueError(f"invalid nvidia job name {job!r}")
+    text = policy_path.read_text(encoding="utf-8")
+    text = _patch_table_winner(text, f"[nvidia.jobs.{job}]", winner, fallback)
+    if job == SCREENSHOT_JOB:
+        text = _patch_table_winner(text, "[nvidia]", winner, fallback)
     policy_path.write_text(text, encoding="utf-8")
+
+
+def write_nvidia_winner(policy_path: Path, winner: str, fallback: str) -> None:
+    """Patch only [nvidia.jobs.screenshot_tickers]; screenshot_tickers also patches [nvidia]."""
+    write_job_winner(policy_path, SCREENSHOT_JOB, winner, fallback)
 
 
 def format_bakeoff_table(result: BakeoffResult) -> str:

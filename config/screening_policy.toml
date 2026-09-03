@@ -151,8 +151,9 @@ openfigi_mapping_url = "https://api.openfigi.com/v3/mapping"
 openfigi_retry_seconds = 65
 
 [nvidia]
-# Bake-off on image.png (2026-08-22): MiniMax exact 1/1; nano-12b-vl exact 1/1 (429 fallback).
-# Dropped OCR (0.375), llama-3.2-11b-vision (0.500), omni-30b (tied 1/1, slower).
+# MiniMax-M3 is non-commercial on NIM; do not reuse as a searcher or checker default.
+# OCR needs ocr_url (CV endpoint, not chat completions).
+ocr_url = "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2"
 chat_url = "https://integrate.api.nvidia.com/v1/chat/completions"
 winner = "minimaxai/minimax-m3"
 fallback_429 = "nvidia/nemotron-nano-12b-v2-vl"
@@ -170,3 +171,24 @@ kind = "vlm"
 [[nvidia.bakeoff_models]]
 id = "nvidia/nemotron-nano-12b-v2-vl"
 kind = "vlm"
+
+[[nvidia.bakeoff_models]]
+id = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+kind = "vlm"
+
+[[nvidia.bakeoff_models]]
+id = "nvidia/nemotron-ocr-v2"
+kind = "ocr"
+url = "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2"
+
+[[nvidia.bakeoff_models]]
+id = "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"
+kind = "vlm"
+
+[[nvidia.bakeoff_models]]
+id = "meta/llama-3.2-11b-vision-instruct"
+kind = "vlm"
+
+[nvidia.jobs.screenshot_tickers]
+winner = "minimaxai/minimax-m3"
+fallback_429 = "nvidia/nemotron-nano-12b-v2-vl"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,13 @@ import config  # noqa: E402
 
 def test_app_toml_has_no_secret_keys() -> None:
     data = config.load_app_toml()
+    keys = set(config._walk_keys(data))
+    assert keys.isdisjoint(config._SECRET_TOML_KEYS)
+
+
+def test_screening_policy_has_no_secret_keys() -> None:
+    with config.POLICY_PATH.open("rb") as fh:
+        data = tomllib.load(fh)
     keys = set(config._walk_keys(data))
     assert keys.isdisjoint(config._SECRET_TOML_KEYS)
 

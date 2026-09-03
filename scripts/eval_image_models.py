@@ -32,10 +32,11 @@ import httpx  # noqa: E402
 
 from config import LOG_LEVEL, NVIDIA_API_KEY, POLICY_PATH  # noqa: E402
 from nvidia_nim import (  # noqa: E402
+    SCREENSHOT_JOB,
     NvidiaNimClient,
     format_bakeoff_table,
     run_bakeoff,
-    write_nvidia_winner,
+    write_job_winner,
 )
 from policy import load_policy  # noqa: E402
 
@@ -113,7 +114,9 @@ async def _run(
         )
         return 1
     if write_policy:
-        write_nvidia_winner(policy_path, result.winner, result.fallback_429)
+        write_job_winner(
+            policy_path, SCREENSHOT_JOB, result.winner, result.fallback_429
+        )
         print(
             f"Wrote winner={result.winner!r} fallback_429={result.fallback_429!r} to {policy_path}"
         )
