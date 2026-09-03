@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from config import EVAL_FIXTURES_PATH, POLICY_PATH
 from fusion import HALAL, NOT_HALAL, fuse_conjunction, required_plugin_names
 from market_data import YFinanceMarketData, _latest_fact, _sum_facts_same_period
-from plugins.base import Fundamentals, PluginVote, Vote
+from plugins.base import DenominatorSource, Fundamentals, PluginVote, Vote
 from plugins.nport import (
     Holding,
     NportClient,
@@ -58,6 +58,8 @@ def _ok_equity(ticker: str = "AAPL", **overrides) -> Fundamentals:
         industry="Consumer Electronics",
         company_name="Test Co",
         market_cap=1000.0,
+        trailing_avg_market_cap=1000.0,
+        denominator_source=DenominatorSource.TRAILING_AVG,
         total_debt=100.0,
         cash_and_securities=50.0,
         interest_income=10.0,
@@ -162,6 +164,130 @@ async def test_debt_ratio_fail_at_or_above_33(
     result = await engine.screen("AAPL")
     assert result.votes["Ratios"].vote is ratios_vote
     assert result.verdict == verdict
+
+
+@pytest.mark.asyncio
+async def test_cdw_shaped_debt_37_pct_of_trailing_denom_fails() -> None:
+    # 37% of trailing FAIL; 18.5% of spot would PASS if spot were used.
+    engine = _engine(
+        {
+            "CDW": _ok_equity(
+                ticker="CDW",
+                market_cap=2000.0,
+                trailing_avg_market_cap=1000.0,
+                denominator_source=DenominatorSource.TRAILING_AVG,
+                total_debt=370.0,
+            )
+        }
+    )
+    result = await engine.screen("CDW")
+    assert result.votes["Ratios"].vote is Vote.FAIL
+    assert "debt" in result.votes["Ratios"].reason
+    assert result.votes["Ratios"].metrics["debt_pct"] == pytest.approx(37.0)
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_tsco_shaped_debt_exactly_33_pct_of_trailing_denom_fails() -> None:
+    # 33.0% of trailing FAIL (>=); 16.5% of spot would PASS if spot were used.
+    engine = _engine(
+        {
+            "TSCO": _ok_equity(
+                ticker="TSCO",
+                market_cap=2000.0,
+                trailing_avg_market_cap=1000.0,
+                denominator_source=DenominatorSource.TRAILING_AVG,
+                total_debt=330.0,
+            )
+        }
+    )
+    result = await engine.screen("TSCO")
+    assert result.votes["Ratios"].vote is Vote.FAIL
+    assert "debt" in result.votes["Ratios"].reason
+    assert result.votes["Ratios"].metrics["debt_pct"] == pytest.approx(33.0)
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_trailing_avg_denom_passes_when_spot_debt_would_fail() -> None:
+    # 37% of spot FAIL; 18.5% of trailing PASS.
+    engine = _engine(
+        {
+            "AAPL": _ok_equity(
+                market_cap=1000.0,
+                trailing_avg_market_cap=2000.0,
+                denominator_source=DenominatorSource.TRAILING_AVG,
+                total_debt=370.0,
+            )
+        }
+    )
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Ratios"].metrics["debt_pct"] == pytest.approx(18.5)
+    assert result.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_missing_use_trailing_avg_market_cap_uses_spot() -> None:
+    policy = load_policy(POLICY_PATH)
+    del policy.raw["ratios"]["use_trailing_avg_market_cap"]
+    # Trailing 16.5% would PASS; spot 33% FAIL.
+    engine = _engine(
+        {
+            "AAPL": _ok_equity(
+                market_cap=1000.0,
+                trailing_avg_market_cap=2000.0,
+                denominator_source=DenominatorSource.TRAILING_AVG,
+                total_debt=330.0,
+            )
+        },
+        policy=policy,
+    )
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.FAIL
+    assert result.votes["Ratios"].metrics["debt_pct"] == pytest.approx(33.0)
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_spot_fallback_uses_spot_denom_when_ok() -> None:
+    policy = load_policy(POLICY_PATH)
+    assert policy.section("ratios").get("spot_fallback_ok") is True
+    engine = _engine(
+        {
+            "AAPL": _ok_equity(
+                market_cap=1000.0,
+                trailing_avg_market_cap=2000.0,
+                denominator_source=DenominatorSource.SPOT_FALLBACK,
+                total_debt=330.0,
+            )
+        },
+        policy=policy,
+    )
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.FAIL
+    assert result.votes["Ratios"].metrics["debt_pct"] == pytest.approx(33.0)
+
+
+@pytest.mark.asyncio
+async def test_spot_fallback_abstains_when_not_ok() -> None:
+    policy = load_policy(POLICY_PATH)
+    policy.raw["ratios"]["spot_fallback_ok"] = False
+    engine = _engine(
+        {
+            "AAPL": _ok_equity(
+                market_cap=1000.0,
+                trailing_avg_market_cap=None,
+                denominator_source=DenominatorSource.SPOT_FALLBACK,
+                total_debt=100.0,
+            )
+        },
+        policy=policy,
+    )
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.ABSTAIN
+    assert "market cap" in result.votes["Ratios"].reason
+    assert result.verdict == NOT_HALAL
 
 
 @pytest.mark.asyncio
@@ -626,6 +752,8 @@ def test_plugins_have_no_ticker_allowlist() -> None:
         text = path.read_text(encoding="utf-8")
         assert "SPUS" not in text
         assert "HLAL" not in text
+        assert "CDW" not in text
+        assert "TSCO" not in text
 
 
 @pytest.mark.asyncio
@@ -713,6 +841,9 @@ async def test_companyfacts_http_error_keeps_yfinance_fields(
                 None,
                 None,
             )
+
+        def _download_history(self, ticker: str):
+            return None
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         fundamentals = await Stub(policy, http=http).get("AAPL")

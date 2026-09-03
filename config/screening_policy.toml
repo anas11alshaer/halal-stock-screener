@@ -51,6 +51,10 @@ denied_industries = [
 
 [ratios]
 debt_to_market_cap_pct = 33.0
+# Absent use_trailing_avg_market_cap: spot market cap.
+use_trailing_avg_market_cap = true
+trailing_avg_months = 36
+spot_fallback_ok = true
 cash_to_market_cap_pct = 30.0
 receivables_to_market_cap_pct = 49.0
 impermissible_income_to_revenue_pct = 5.0

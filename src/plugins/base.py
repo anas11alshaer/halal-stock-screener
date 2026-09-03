@@ -23,6 +23,12 @@ class FactState(str, Enum):
     DOUBTFUL = "doubtful"
 
 
+class DenominatorSource(str, Enum):
+    TRAILING_AVG = "trailing_avg"
+    SPOT_FALLBACK = "spot_fallback"
+    SPOT = "spot"
+
+
 @dataclass
 class PluginVote:
     plugin: str
@@ -39,6 +45,9 @@ class Fundamentals:
     industry: str | None = None
     company_name: str | None = None
     market_cap: float | None = None
+    trailing_avg_market_cap: float | None = None
+    trailing_avg_months: int | None = None
+    denominator_source: DenominatorSource = DenominatorSource.SPOT
     total_debt: float | None = None
     cash_and_securities: float | None = None
     accounts_receivable: float | None = None

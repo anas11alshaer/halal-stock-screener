@@ -2,13 +2,37 @@
 
 from __future__ import annotations
 
-from plugins.base import Plugin, PluginVote, ScreenContext, Vote, is_fund
+from plugins.base import (
+    DenominatorSource,
+    Fundamentals,
+    Plugin,
+    PluginVote,
+    ScreenContext,
+    Vote,
+    is_fund,
+)
 
 
 def _ratio_pct(numer: float, denom: float) -> float | None:
     if denom == 0:
         return None
     return (numer / denom) * 100.0
+
+
+def _market_cap_denominator(f: Fundamentals, section: dict) -> float | None:
+    if not section.get("use_trailing_avg_market_cap"):
+        return f.market_cap
+    if (
+        f.denominator_source == DenominatorSource.TRAILING_AVG
+        and f.trailing_avg_market_cap is not None
+    ):
+        return f.trailing_avg_market_cap
+    spot_ok = section.get("spot_fallback_ok")
+    if spot_ok is None:
+        spot_ok = True
+    if spot_ok:
+        return f.market_cap
+    return None
 
 
 class RatiosPlugin(Plugin):
@@ -37,6 +61,7 @@ class RatiosPlugin(Plugin):
 
         f = ctx.fundamentals
         metrics: dict[str, float | None] = {}
+        denom = _market_cap_denominator(f, section)
 
         # Interest income is required; missing → ABSTAIN (fail-closed at fusion).
         if f.interest_income is None:
@@ -46,7 +71,7 @@ class RatiosPlugin(Plugin):
                 reason="missing interest-income",
                 metrics=metrics,
             )
-        if f.revenue is None or f.market_cap is None:
+        if f.revenue is None or denom is None:
             return PluginVote(
                 plugin=self.name,
                 vote=Vote.ABSTAIN,
@@ -68,9 +93,9 @@ class RatiosPlugin(Plugin):
                 metrics=metrics,
             )
 
-        debt_pct = _ratio_pct(f.total_debt, f.market_cap)
+        debt_pct = _ratio_pct(f.total_debt, denom)
         cash_pct = (
-            _ratio_pct(f.cash_and_securities, f.market_cap)
+            _ratio_pct(f.cash_and_securities, denom)
             if f.cash_and_securities is not None
             else None
         )
@@ -111,7 +136,7 @@ class RatiosPlugin(Plugin):
         receivables = f.accounts_receivable
         rec_lim = section.get("receivables_to_market_cap_pct")
         if receivables is not None:
-            rec_pct = _ratio_pct(float(receivables), f.market_cap)
+            rec_pct = _ratio_pct(float(receivables), denom)
             metrics["receivables_pct"] = rec_pct
             if (
                 receivables_screen_enabled

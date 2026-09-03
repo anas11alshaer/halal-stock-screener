@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import logging
 import math
+from collections.abc import Sequence
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import httpx
 import yfinance as yf
 
-from plugins.base import FactState, Fundamentals, is_fund
+from plugins.base import DenominatorSource, FactState, Fundamentals, is_fund
 from policy import Policy
+
+TRAILING_AVG_MIN_TRADING_DAY_COVERAGE = 0.80
+_TRADING_DAYS_PER_YEAR = 252
 
 _RATIO_FACT_FIELDS = (
     "interest_income",
@@ -106,6 +112,14 @@ class YFinanceMarketData(MarketData):
             income_statement_present=_financials_present(financials),
         )
 
+        if ratios.get("use_trailing_avg_market_cap") and not is_fund(
+            fundamentals.quote_type, self._policy
+        ):
+            history = None
+            if fundamentals.market_cap is not None:
+                history = await asyncio.to_thread(self._download_history, ticker)
+            self._apply_trailing_avg(fundamentals, history, ratios)
+
         if (
             ratios.get("use_sec_companyfacts")
             and self._http is not None
@@ -134,6 +148,35 @@ class YFinanceMarketData(MarketData):
             logger.warning("yfinance balance sheet failed for %s: %s", ticker, exc)
             balance = None
         return info, financials, balance
+
+    def _download_history(self, ticker: str) -> Any:
+        try:
+            stock = yf.Ticker(ticker)
+            # yfinance has no 3y period; 5y covers a 36-mo window plus pad.
+            return stock.history(period="5y")
+        except Exception as exc:
+            logger.warning("yfinance history failed for %s: %s", ticker, exc)
+            return None
+
+    def _apply_trailing_avg(
+        self, fundamentals: Fundamentals, history: Any, ratios: dict[str, Any]
+    ) -> None:
+        months = _policy_trailing_months(ratios)
+        cap, source = compute_trailing_avg_market_cap(
+            _history_closes(history),
+            fundamentals.market_cap,
+            months,
+        )
+        fundamentals.denominator_source = source
+        fundamentals.trailing_avg_market_cap = cap
+        if source is DenominatorSource.TRAILING_AVG:
+            fundamentals.trailing_avg_months = months
+        else:
+            logger.warning(
+                "trailing-avg market cap fallback for %s (source=%s)",
+                fundamentals.ticker,
+                source.value,
+            )
 
     async def _fill_companyfacts(self, fundamentals: Fundamentals) -> None:
         if self._http is None:
@@ -221,6 +264,100 @@ class YFinanceMarketData(MarketData):
                 mapping[t] = str(cik).zfill(10)
         self._ticker_ciks = mapping
         return mapping
+
+
+def compute_trailing_avg_market_cap(
+    bars: Sequence[tuple[date, float]],
+    spot_market_cap: float | None,
+    months: int,
+) -> tuple[float | None, DenominatorSource]:
+    """sharesOutstanding is unused (dual-class)."""
+    if spot_market_cap is None or months <= 0:
+        return None, DenominatorSource.SPOT_FALLBACK
+    ordered = sorted(
+        ((d, c) for d, c in bars if c is not None),
+        key=lambda item: item[0],
+    )
+    if not ordered:
+        return None, DenominatorSource.SPOT_FALLBACK
+    last_date, last_close = ordered[-1]
+    if last_close == 0:
+        return None, DenominatorSource.SPOT_FALLBACK
+    window_start = _shift_months(last_date, -months)
+    windowed = [(d, close) for d, close in ordered if d >= window_start]
+    if not windowed:
+        return None, DenominatorSource.SPOT_FALLBACK
+    # Non-trading window_start: first bar may be a few days later.
+    if windowed[0][0] > window_start + timedelta(days=7):
+        return None, DenominatorSource.SPOT_FALLBACK
+    expected_days = _TRADING_DAYS_PER_YEAR * (months / 12.0)
+    if len(windowed) < expected_days * TRAILING_AVG_MIN_TRADING_DAY_COVERAGE:
+        return None, DenominatorSource.SPOT_FALLBACK
+    mean_close = sum(close for _, close in windowed) / len(windowed)
+    return mean_close / last_close * spot_market_cap, DenominatorSource.TRAILING_AVG
+
+
+def _policy_trailing_months(ratios: dict[str, Any]) -> int:
+    raw = ratios.get("trailing_avg_months")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _shift_months(d: date, months: int) -> date:
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    date_fn = getattr(value, "date", None)
+    if callable(date_fn):
+        try:
+            got = date_fn()
+        except Exception:
+            return None
+        if isinstance(got, datetime):
+            return got.date()
+        if isinstance(got, date):
+            return got
+    return None
+
+
+def _history_closes(history: Any) -> list[tuple[date, float]]:
+    if history is None:
+        return []
+    if isinstance(history, (list, tuple)):
+        pairs: list[tuple[date, float]] = []
+        for item in history:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            day = _as_date(item[0])
+            close = _to_float(item[1])
+            if day is not None and close is not None:
+                pairs.append((day, close))
+        return pairs
+    if getattr(history, "empty", False):
+        return []
+    try:
+        close_col = history["Close"]
+    except Exception:
+        return []
+    pairs = []
+    items = close_col.items() if hasattr(close_col, "items") else []
+    for idx, val in items:
+        day = _as_date(idx)
+        close = _to_float(val)
+        if day is not None and close is not None:
+            pairs.append((day, close))
+    return pairs
 
 
 def _financials_present(financials: Any) -> bool:
