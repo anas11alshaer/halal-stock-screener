@@ -358,18 +358,29 @@ async def test_empty_activity_denylist_lets_bank_pass() -> None:
     policy = load_policy(POLICY_PATH)
     policy.raw["activity"]["denied_sectors"] = []
     policy.raw["activity"]["denied_industries"] = []
+    policy.raw["activity"]["denied_industry_substrings"] = []
     engine = _engine(
         {
             "JPM": _ok_equity(
                 ticker="JPM",
                 sector="Financial Services",
                 industry="Banks - Diversified",
-            )
+            ),
+            "CGC": _ok_equity(
+                ticker="CGC",
+                sector="Healthcare",
+                industry="Specialty Cannabis",
+            ),
         },
         policy=policy,
     )
-    result = await engine.screen("JPM")
-    assert result.votes["Activity"].vote is Vote.PASS
+    bank = await engine.screen("JPM")
+    assert bank.votes["Ratios"].vote is Vote.PASS
+    assert bank.votes["Activity"].vote is Vote.PASS
+    assert bank.verdict == HALAL
+    cannabis = await engine.screen("CGC")
+    assert cannabis.votes["Activity"].vote is Vote.PASS
+    assert cannabis.verdict == HALAL
 
 
 @pytest.mark.asyncio
@@ -414,19 +425,241 @@ async def test_halalwallet_in_dataset_abstain_is_not_required() -> None:
 
 
 @pytest.mark.asyncio
-async def test_conjunction_bank_activity_fail() -> None:
+@pytest.mark.parametrize(
+    ("ticker", "industry", "company_name"),
+    [
+        ("JPM", "Banks - Diversified", "JPMorgan Chase"),
+        ("BAC", "Banks - Diversified", "Bank of America"),
+        ("DIB", "Banks - Regional", "Dubai Islamic Bank Takaful"),
+    ],
+)
+async def test_conjunction_bank_activity_fail(
+    ticker: str, industry: str, company_name: str
+) -> None:
     engine = _engine(
         {
-            "JPM": _ok_equity(
-                ticker="JPM",
+            ticker: _ok_equity(
+                ticker=ticker,
                 sector="Financial Services",
-                industry="Banks - Diversified",
+                industry=industry,
+                company_name=company_name,
             )
         }
     )
-    result = await engine.screen("JPM")
+    result = await engine.screen(ticker)
+    assert result.votes["Ratios"].vote is Vote.PASS
     assert result.votes["Activity"].vote is Vote.FAIL
     assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_tobacco_industry_activity_fail() -> None:
+    engine = _engine(
+        {
+            "MO": _ok_equity(
+                ticker="MO",
+                sector="Consumer Defensive",
+                industry="Tobacco",
+            )
+        }
+    )
+    result = await engine.screen("MO")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.FAIL
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "industry",
+    ["Specialty Cannabis", "Medical MARIJUANA Products"],
+)
+async def test_cannabis_substring_activity_fail(industry: str) -> None:
+    denied = [
+        s.casefold()
+        for s in load_policy(POLICY_PATH).section("activity").get("denied_industries")
+        or []
+    ]
+    assert industry.casefold() not in denied
+    engine = _engine(
+        {
+            "CGC": _ok_equity(
+                ticker="CGC",
+                sector="Healthcare",
+                industry=industry,
+            )
+        }
+    )
+    result = await engine.screen("CGC")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.FAIL
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_msft_software_infrastructure_activity_pass() -> None:
+    engine = _engine(
+        {
+            "MSFT": _ok_equity(
+                ticker="MSFT",
+                sector="Technology",
+                industry="Software - Infrastructure",
+            )
+        }
+    )
+    result = await engine.screen("MSFT")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert result.verdict == HALAL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "industry",
+    ["Movies & Entertainment", "Advertising Agencies", "Advertising"],
+)
+async def test_movies_and_advertising_industries_activity_pass(industry: str) -> None:
+    denied = [
+        s.casefold()
+        for s in load_policy(POLICY_PATH).section("activity").get("denied_industries")
+        or []
+    ]
+    assert industry.casefold() not in denied
+    engine = _engine(
+        {
+            "DIS": _ok_equity(
+                ticker="DIS",
+                sector="Communication Services",
+                industry=industry,
+            )
+        }
+    )
+    result = await engine.screen("DIS")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert result.verdict == HALAL
+
+
+def test_committed_denylist_omits_media_and_gics_extras() -> None:
+    denied = [
+        s.casefold()
+        for s in load_policy(POLICY_PATH).section("activity").get("denied_industries")
+        or []
+    ]
+    for name in (
+        "movies & entertainment",
+        "advertising",
+        "advertising agencies",
+        "financial data & stock exchanges",
+        "transaction & payment processing services",
+        "luxury goods",
+        "drug manufacturers - general",
+    ):
+        assert name not in denied
+
+
+@pytest.mark.asyncio
+async def test_financial_data_industry_outside_finance_sector_passes() -> None:
+    engine = _engine(
+        {
+            "ICE": _ok_equity(
+                ticker="ICE",
+                sector="Technology",
+                industry="Financial Data & Stock Exchanges",
+            )
+        }
+    )
+    result = await engine.screen("ICE")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert result.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_pypl_credit_services_activity_fail() -> None:
+    engine = _engine(
+        {
+            "PYPL": _ok_equity(
+                ticker="PYPL",
+                sector="Financial Services",
+                industry="Credit Services",
+            )
+        }
+    )
+    result = await engine.screen("PYPL")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.FAIL
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_activity_substring_matches_industry_not_sector() -> None:
+    engine = _engine(
+        {
+            "X": _ok_equity(
+                ticker="X",
+                sector="Cannabis Retail",
+                industry="Software - Infrastructure",
+            )
+        }
+    )
+    result = await engine.screen("X")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert result.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_missing_denied_industry_substrings_key_is_empty() -> None:
+    policy = load_policy(POLICY_PATH)
+    policy.raw["activity"].pop("denied_industry_substrings", None)
+    engine = _engine(
+        {
+            "CGC": _ok_equity(
+                ticker="CGC",
+                sector="Healthcare",
+                industry="Specialty Cannabis",
+            )
+        },
+        policy=policy,
+    )
+    result = await engine.screen("CGC")
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert result.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_aerospace_and_defense_industry_activity_fail() -> None:
+    engine = _engine(
+        {
+            "LMT": _ok_equity(
+                ticker="LMT",
+                sector="Industrials",
+                industry="Aerospace & Defense",
+            )
+        }
+    )
+    result = await engine.screen("LMT")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.FAIL
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_non_aerospace_industrial_is_not_activity_fail() -> None:
+    engine = _engine(
+        {
+            "CAT": _ok_equity(
+                ticker="CAT",
+                sector="Industrials",
+                industry="Farm & Heavy Construction Machinery",
+            )
+        }
+    )
+    result = await engine.screen("CAT")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert result.verdict == HALAL
 
 
 @pytest.mark.asyncio

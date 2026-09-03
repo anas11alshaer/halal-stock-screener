@@ -19,6 +19,9 @@ class ActivityPlugin(Plugin):
         section = self.policy.section("activity")
         denied_sectors = {s.lower() for s in section.get("denied_sectors") or []}
         denied_industries = {s.lower() for s in section.get("denied_industries") or []}
+        denied_industry_substrings = [
+            s.lower() for s in section.get("denied_industry_substrings") or []
+        ]
 
         sector = (ctx.fundamentals.sector or "").strip()
         industry = (ctx.fundamentals.industry or "").strip()
@@ -40,6 +43,14 @@ class ActivityPlugin(Plugin):
                 metrics=metrics,
             )
         if industry and industry.lower() in denied_industries:
+            return PluginVote(
+                plugin=self.name,
+                vote=Vote.FAIL,
+                reason=f"denied industry {industry!r}",
+                metrics=metrics,
+            )
+        folded_industry = industry.lower()
+        if any(part in folded_industry for part in denied_industry_substrings):
             return PluginVote(
                 plugin=self.name,
                 vote=Vote.FAIL,

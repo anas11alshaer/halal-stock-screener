@@ -48,6 +48,13 @@ denied_industries = [
     "Resorts & Casinos",
     "Tobacco",
 ]
+denied_industry_substrings = [
+    "tobacco", "brewers", "winery", "distiller",
+    "casino", "gambling", "cannabis", "marijuana",
+    "adult entertainment",
+]
+# Do not add "Financial Data & Stock Exchanges", GICS 40203040 / 40201060,
+# Movies & Entertainment, or Advertising.
 
 [ratios]
 debt_to_market_cap_pct = 33.0
