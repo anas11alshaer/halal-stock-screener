@@ -10,8 +10,16 @@ from typing import Any
 import httpx
 import yfinance as yf
 
-from plugins.base import Fundamentals, is_fund
+from plugins.base import FactState, Fundamentals, is_fund
 from policy import Policy
+
+_RATIO_FACT_FIELDS = (
+    "interest_income",
+    "revenue",
+    "total_debt",
+    "cash_and_securities",
+    "accounts_receivable",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +87,9 @@ class YFinanceMarketData(MarketData):
         cash = _first_row(balance, list(ratios.get("yfinance_cash_rows") or []))
         if cash is None:
             cash = _to_float(info.get("totalCash"))
+        receivable = _first_row(
+            balance, list(ratios.get("yfinance_receivable_rows") or [])
+        )
 
         fundamentals = Fundamentals(
             ticker=ticker,
@@ -89,16 +100,20 @@ class YFinanceMarketData(MarketData):
             market_cap=_to_float(info.get("marketCap")),
             total_debt=debt,
             cash_and_securities=cash,
+            accounts_receivable=receivable,
             interest_income=interest,
             revenue=revenue,
+            income_statement_present=_financials_present(financials),
         )
 
         if (
-            fundamentals.interest_income is None
-            and ratios.get("use_sec_companyfacts")
+            ratios.get("use_sec_companyfacts")
+            and self._http is not None
             and not is_fund(fundamentals.quote_type, self._policy)
+            and _ratio_input_missing(fundamentals)
         ):
             await self._fill_companyfacts(fundamentals)
+        self._apply_fact_states(fundamentals)
         return fundamentals
 
     def _download(self, ticker: str) -> tuple[dict[str, Any], Any, Any]:
@@ -139,16 +154,16 @@ class YFinanceMarketData(MarketData):
             return
 
         ratios = self._policy.section("ratios")
+        interest_tags = list(ratios.get("companyfacts_interest_income_tags") or [])
+        revenue_tags = list(ratios.get("companyfacts_revenue_tags") or [])
         if fundamentals.interest_income is None:
             fundamentals.interest_income = _latest_fact(
                 facts,
-                list(ratios.get("companyfacts_interest_income_tags") or []),
+                interest_tags,
                 skip_net=True,
             )
         if fundamentals.revenue is None:
-            fundamentals.revenue = _latest_fact(
-                facts, list(ratios.get("companyfacts_revenue_tags") or [])
-            )
+            fundamentals.revenue = _latest_fact(facts, revenue_tags)
         if fundamentals.total_debt is None:
             fundamentals.total_debt = _sum_facts_same_period(
                 facts, list(ratios.get("companyfacts_debt_tags") or [])
@@ -157,6 +172,29 @@ class YFinanceMarketData(MarketData):
             fundamentals.cash_and_securities = _sum_facts_same_period(
                 facts, list(ratios.get("companyfacts_cash_tags") or [])
             )
+        if fundamentals.accounts_receivable is None:
+            fundamentals.accounts_receivable = _latest_fact(
+                facts, list(ratios.get("companyfacts_receivable_tags") or [])
+            )
+        if not fundamentals.income_statement_present and (
+            _has_fy_usd_fact(facts, interest_tags, skip_net=True)
+            or _has_fy_usd_fact(facts, revenue_tags)
+        ):
+            fundamentals.income_statement_present = True
+
+    def _apply_fact_states(self, fundamentals: Fundamentals) -> None:
+        for name in _RATIO_FACT_FIELDS:
+            value = getattr(fundamentals, name)
+            fundamentals.fact_states[name] = (
+                FactState.FOUND if value is not None else FactState.MISSING
+            )
+        quote = (fundamentals.quote_type or "").upper()
+        if (
+            quote == "EQUITY"
+            and not is_fund(quote, self._policy)
+            and not fundamentals.segments
+        ):
+            fundamentals.fact_states["segments"] = FactState.MISSING
 
     async def _cik_for(self, ticker: str) -> str | None:
         mapping = await self._company_tickers()
@@ -183,6 +221,26 @@ class YFinanceMarketData(MarketData):
                 mapping[t] = str(cik).zfill(10)
         self._ticker_ciks = mapping
         return mapping
+
+
+def _financials_present(financials: Any) -> bool:
+    return bool(financials is not None and not getattr(financials, "empty", True))
+
+
+def _ratio_input_missing(fundamentals: Fundamentals) -> bool:
+    return any(getattr(fundamentals, name) is None for name in _RATIO_FACT_FIELDS)
+
+
+def _has_fy_usd_fact(
+    gaap: dict[str, Any], tags: list[str], *, skip_net: bool = False
+) -> bool:
+    for tag in tags:
+        if skip_net and _is_net_interest_tag(tag):
+            continue
+        for point in _usd_unit_points((gaap.get(tag) or {}).get("units") or {}):
+            if str(point.get("fp") or "").upper() == "FY":
+                return True
+    return False
 
 
 def _usd_unit_points(units: dict[str, Any]) -> list[dict[str, Any]]:

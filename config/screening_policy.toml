@@ -8,10 +8,14 @@ enabled_plugins = [
     "NportHoldings",
 ]
 
+[standard]
+# Label only. Plugins read numeric limits from [ratios], not this name.
+name = "sp_shariah"
+
 [fusion]
 name = "conjunction"
 required_plugins = ["Activity", "Ratios"]
-add_required_when_in_dataset = ["HalalWallet"]
+add_required_when_in_dataset = []
 
 [fusion.required_plugins_by_quote_type]
 EQUITY = ["Activity", "Ratios"]
@@ -19,6 +23,7 @@ ETF = ["NportHoldings"]
 MUTUALFUND = ["NportHoldings"]
 
 [activity]
+unquantified_denied_tag = "doubtful"
 denied_sectors = [
     "Financial Services",
 ]
@@ -45,14 +50,20 @@ denied_industries = [
 ]
 
 [ratios]
-debt_to_market_cap_pct = 30.0
+debt_to_market_cap_pct = 33.0
 cash_to_market_cap_pct = 30.0
+receivables_to_market_cap_pct = 49.0
 impermissible_income_to_revenue_pct = 5.0
 margin_pct = 0.0
+# Absent cash_screen_enabled / receivables_screen_enabled: screens on.
+cash_screen_enabled = false
+receivables_screen_enabled = false
 use_sec_companyfacts = true
 yfinance_interest_income_rows = [
     "Interest Income",
     "InterestIncome",
+    "Interest Income Non Operating",
+    "InterestIncomeNonOperating",
     "Net Interest Income",
 ]
 yfinance_revenue_rows = [
@@ -70,6 +81,12 @@ yfinance_cash_rows = [
     "CashAndCashEquivalents",
     "Cash And Cash Equivalents",
     "Cash And Short Term Investments",
+]
+yfinance_receivable_rows = [
+    "Net Receivables",
+    "Accounts Receivable",
+    "AccountsReceivable",
+    "Receivables",
 ]
 companyfacts_interest_income_tags = [
     "InterestIncomeOperating",
@@ -93,6 +110,11 @@ companyfacts_cash_tags = [
     "CashCashEquivalentsAndShortTermInvestments",
     "AvailableForSaleSecuritiesCurrent",
     "ShortTermInvestments",
+]
+companyfacts_receivable_tags = [
+    "AccountsReceivableNetCurrent",
+    "AccountsReceivableNet",
+    "AccountsAndOtherReceivablesNetCurrent",
 ]
 
 [etf]

@@ -11,6 +11,16 @@ stocks = [
     "MO",   # tobacco (activity fail)
     "XOM",
     "GOOGL",
+    "CDW",
+    "TSCO",
+    "CSX",
+    "ECL",
+    "ITW",
+    "KO",
+    "DHI",
+    "LULU",
+    "AMZN",
+    "WMT",
 ]
 
 etfs = [

@@ -16,6 +16,13 @@ class Vote(Enum):
     ABSTAIN = "ABSTAIN"
 
 
+class FactState(str, Enum):
+    FOUND = "found"
+    ZERO = "zero"
+    MISSING = "missing"
+    DOUBTFUL = "doubtful"
+
+
 @dataclass
 class PluginVote:
     plugin: str
@@ -34,8 +41,12 @@ class Fundamentals:
     market_cap: float | None = None
     total_debt: float | None = None
     cash_and_securities: float | None = None
+    accounts_receivable: float | None = None
     interest_income: float | None = None
     revenue: float | None = None
+    income_statement_present: bool = False
+    segments: list = field(default_factory=list)
+    fact_states: dict[str, FactState] = field(default_factory=dict)
 
 
 @dataclass

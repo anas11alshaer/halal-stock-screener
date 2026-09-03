@@ -147,6 +147,87 @@ async def test_policy_thresholds_not_hardcoded_in_plugin() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("total_debt", "ratios_vote", "verdict"),
+    [
+        (329.0, Vote.PASS, HALAL),
+        (330.0, Vote.FAIL, NOT_HALAL),
+        (331.0, Vote.FAIL, NOT_HALAL),
+    ],
+)
+async def test_debt_ratio_fail_at_or_above_33(
+    total_debt: float, ratios_vote: Vote, verdict: str
+) -> None:
+    engine = _engine({"AAPL": _ok_equity(total_debt=total_debt)})
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is ratios_vote
+    assert result.verdict == verdict
+
+
+@pytest.mark.asyncio
+async def test_cash_screen_off_high_cash_is_pass() -> None:
+    engine = _engine({"AAPL": _ok_equity(cash_and_securities=400.0)})
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert "cash" not in result.votes["Ratios"].reason
+    assert result.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_cash_screen_off_missing_cash_does_not_abstain() -> None:
+    engine = _engine({"AAPL": _ok_equity(cash_and_securities=None)})
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_ar_parsed_with_screen_off_metrics_only() -> None:
+    policy = load_policy(POLICY_PATH)
+    assert policy.section("ratios").get("receivables_screen_enabled") is False
+    assert policy.section("ratios").get("receivables_to_market_cap_pct") == 49.0
+    engine = _engine(
+        {"AAPL": _ok_equity(accounts_receivable=900.0)},
+        policy=policy,
+    )
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.PASS
+    assert result.votes["Ratios"].metrics["receivables_pct"] == pytest.approx(90.0)
+    assert "receivables" not in result.votes["Ratios"].reason
+    assert result.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_missing_cash_screen_enabled_key_still_applies_cash() -> None:
+    policy = load_policy(POLICY_PATH)
+    del policy.raw["ratios"]["cash_screen_enabled"]
+    engine = _engine({"AAPL": _ok_equity(cash_and_securities=400.0)}, policy=policy)
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.FAIL
+    assert "cash" in result.votes["Ratios"].reason
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_missing_receivables_screen_enabled_key_still_applies_ar() -> None:
+    policy = load_policy(POLICY_PATH)
+    del policy.raw["ratios"]["receivables_screen_enabled"]
+    engine = _engine(
+        {"AAPL": _ok_equity(accounts_receivable=900.0)},
+        policy=policy,
+    )
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.FAIL
+    assert "receivables" in result.votes["Ratios"].reason
+    assert result.verdict == NOT_HALAL
+
+
+def test_unquantified_denied_tag_is_doubtful_in_policy() -> None:
+    policy = load_policy(POLICY_PATH)
+    assert policy.section("activity").get("unquantified_denied_tag") == "doubtful"
+
+
+@pytest.mark.asyncio
 async def test_empty_activity_denylist_lets_bank_pass() -> None:
     policy = load_policy(POLICY_PATH)
     policy.raw["activity"]["denied_sectors"] = []
@@ -166,7 +247,7 @@ async def test_empty_activity_denylist_lets_bank_pass() -> None:
 
 
 @pytest.mark.asyncio
-async def test_halalwallet_required_when_ticker_in_dataset() -> None:
+async def test_halalwallet_not_halal_in_dataset_still_vetoes() -> None:
     records = {
         "AAPL": {
             "ticker": "AAPL",
@@ -178,7 +259,7 @@ async def test_halalwallet_required_when_ticker_in_dataset() -> None:
     engine = _engine({"AAPL": _ok_equity()}, hw_records=records)
     result = await engine.screen("AAPL")
     assert result.votes["HalalWallet"].vote is Vote.FAIL
-    assert "HalalWallet" in result.required
+    assert "HalalWallet" not in result.required
     assert result.verdict == NOT_HALAL
 
 
@@ -192,7 +273,7 @@ async def test_halalwallet_absent_from_dataset_is_not_required() -> None:
 
 
 @pytest.mark.asyncio
-async def test_halalwallet_in_dataset_abstain_is_required_not_halal() -> None:
+async def test_halalwallet_in_dataset_abstain_is_not_required() -> None:
     records = {
         "AAPL": {
             "ticker": "AAPL",
@@ -202,8 +283,8 @@ async def test_halalwallet_in_dataset_abstain_is_required_not_halal() -> None:
     engine = _engine({"AAPL": _ok_equity()}, hw_records=records)
     result = await engine.screen("AAPL")
     assert result.votes["HalalWallet"].vote is Vote.ABSTAIN
-    assert "HalalWallet" in result.required
-    assert result.verdict == NOT_HALAL
+    assert "HalalWallet" not in result.required
+    assert result.verdict == HALAL
 
 
 @pytest.mark.asyncio
@@ -396,6 +477,19 @@ def test_eval_fixture_list_has_stocks_and_etfs_and_a_bank() -> None:
     assert stocks
     assert etfs
     assert {"JPM", "BAC"} & stocks
+    assert {
+        "CDW",
+        "TSCO",
+        "CSX",
+        "ECL",
+        "ITW",
+        "KO",
+        "DHI",
+        "LULU",
+        "AMZN",
+        "WMT",
+    } <= stocks
+    assert {"SPUS", "HLAL"} <= etfs
 
 
 def test_parse_nport_xml_percent_scale() -> None:
@@ -558,7 +652,7 @@ async def test_disabled_nport_plugin_cannot_halal_etf() -> None:
 
 
 @pytest.mark.asyncio
-async def test_halalwallet_fetch_error_fail_closed() -> None:
+async def test_halalwallet_fetch_error_abstain_not_required() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="nope")
 
@@ -572,8 +666,8 @@ async def test_halalwallet_fetch_error_fail_closed() -> None:
         result = await engine.screen("AAPL")
     assert result.votes["HalalWallet"].vote is Vote.ABSTAIN
     assert "unavailable" in result.votes["HalalWallet"].reason
-    assert "HalalWallet" in result.required
-    assert result.verdict == NOT_HALAL
+    assert "HalalWallet" not in result.required
+    assert result.verdict == HALAL
 
 
 def test_edgar_user_agent_missing_email_fail_closed(
