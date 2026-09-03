@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from typing import Any
 
 import httpx
 
@@ -52,13 +54,15 @@ class VerdictEngine:
         nport: NportClient | None = None,
         halalwallet_records: dict | None = None,
         http: httpx.AsyncClient | None = None,
+        finder: Any = None,
     ) -> None:
         self.policy = policy
         self._owns_http = http is None
         self._http = http
         self._market = market
         self._nport = nport
-        self._cache: dict[tuple[str, int], ScreenResult] = {}
+        self._finder = finder
+        self._cache: dict[tuple[Any, ...], ScreenResult] = {}
         self._halalwallet = HalalWalletPlugin(
             policy, records=halalwallet_records, http=None
         )
@@ -100,9 +104,40 @@ class VerdictEngine:
         result = await self.screen(ticker, depth=depth)
         return result.verdict
 
-    async def screen(self, ticker: str, depth: int = 0) -> ScreenResult:
+    async def _ensure_finder(self) -> None:
+        if self._finder is not None:
+            return
+        from config import NVIDIA_API_KEY
+
+        key = (NVIDIA_API_KEY or "").strip()
+        if not key:
+            return
+        from data_finder import DataFinder
+        from filings import FilingsClient
+        from nvidia_nim import NvidiaNimClient
+
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT, follow_redirects=True
+            )
+            self._owns_http = True
+        self._finder = DataFinder(
+            self.policy,
+            NvidiaNimClient(key, self.policy, self._http),
+            FilingsClient(self.policy, self._http),
+        )
+
+    async def screen(
+        self,
+        ticker: str,
+        depth: int = 0,
+        *,
+        plugins: Sequence[str] | None = None,
+        finder: bool = True,
+    ) -> ScreenResult:
         ticker = ticker.upper().strip()
-        cache_key = (ticker, depth)
+        plugin_key = tuple(plugins) if plugins is not None else None
+        cache_key = (ticker, depth, plugin_key, finder)
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -129,17 +164,28 @@ class VerdictEngine:
             fundamentals=fundamentals,
             depth=depth,
         )
+        if finder and not is_fund(quote_type, self.policy):
+            await self._ensure_finder()
+            if self._finder is not None:
+                try:
+                    fundamentals = await self._finder.enrich(ctx)
+                    ctx = replace(ctx, fundamentals=fundamentals)
+                except Exception as exc:
+                    logger.warning("finder enrich failed for %s: %s", ticker, exc)
 
         in_dataset = self._halalwallet.contains(ticker)
+        names = list(plugins) if plugins is not None else self.policy.enabled_plugins
         required = required_plugin_names(
             fusion_section=self.policy.section("fusion"),
             quote_type=quote_type,
             ticker_in_halalwallet=in_dataset,
             enabled=self.policy.enabled_plugins,
         )
+        if plugins is not None:
+            required = [n for n in required if n in plugins]
 
         votes: dict[str, PluginVote] = {}
-        for name in self.policy.enabled_plugins:
+        for name in names:
             plugin = self._plugins.get(name)
             if plugin is None:
                 votes[name] = PluginVote(

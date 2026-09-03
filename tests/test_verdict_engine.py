@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from config import EVAL_FIXTURES_PATH, POLICY_PATH
+from data_finder import NoOpFinder
 from fusion import HALAL, NOT_HALAL, fuse_conjunction, required_plugin_names
 from market_data import YFinanceMarketData, _latest_fact, _sum_facts_same_period
 from plugins.base import DenominatorSource, Fundamentals, PluginVote, Vote
@@ -69,18 +70,24 @@ def _ok_equity(ticker: str = "AAPL", **overrides) -> Fundamentals:
     return Fundamentals(**data)
 
 
+_UNSET = object()
+
+
 def _engine(
     profiles: dict[str, Fundamentals],
     *,
     hw_records: dict | None = None,
     nport: NportClient | None = None,
     policy=None,
+    finder=_UNSET,
 ) -> VerdictEngine:
+    injected = NoOpFinder() if finder is _UNSET else finder
     return VerdictEngine(
         policy or load_policy(POLICY_PATH),
         market=FakeMarket(profiles),
         nport=nport or FakeNport({}),
         halalwallet_records={} if hw_records is None else hw_records,
+        finder=injected,
     )
 
 
@@ -359,6 +366,10 @@ async def test_empty_activity_denylist_lets_bank_pass() -> None:
     policy.raw["activity"]["denied_sectors"] = []
     policy.raw["activity"]["denied_industries"] = []
     policy.raw["activity"]["denied_industry_substrings"] = []
+    assert any(
+        isinstance(spec, dict) and spec.get("id") == "cannabis"
+        for spec in policy.section("activity").get("segments") or []
+    )
     engine = _engine(
         {
             "JPM": _ok_equity(
@@ -1023,6 +1034,7 @@ async def test_halalwallet_fetch_error_abstain_not_required() -> None:
             market=FakeMarket({"AAPL": _ok_equity()}),
             nport=FakeNport({}),
             http=http,
+            finder=NoOpFinder(),
         )
         result = await engine.screen("AAPL")
     assert result.votes["HalalWallet"].vote is Vote.ABSTAIN
@@ -1565,3 +1577,80 @@ def test_eval_screener_fixture_list_concatenates_stocks_and_etfs() -> None:
     tickers = module._load_fixture_tickers(EVAL_FIXTURES_PATH)
     assert {"JPM", "BAC"} & set(tickers)
     assert {"SPY", "SPUS", "HLAL"} & set(tickers)
+
+
+class _SpyFinder:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def enrich(self, ctx):
+        self.calls += 1
+        return ctx.fundamentals
+
+
+@pytest.mark.asyncio
+async def test_engine_enrich_called_once_per_screen() -> None:
+    spy = _SpyFinder()
+    engine = _engine({"AAPL": _ok_equity()}, finder=spy)
+    await engine.screen("AAPL")
+    assert spy.calls == 1
+    await engine.screen("AAPL")
+    assert spy.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_engine_cache_key_separates_plugins_and_finder() -> None:
+    spy = _SpyFinder()
+    engine = _engine(
+        {
+            "MSFT": _ok_equity(
+                ticker="MSFT",
+                sector="Technology",
+                industry="Software - Infrastructure",
+            )
+        },
+        finder=spy,
+    )
+    full = await engine.screen("MSFT")
+    assert spy.calls == 1
+    only = await engine.screen(
+        "MSFT", plugins=["Activity", "HalalWallet"], finder=False
+    )
+    assert spy.calls == 1
+    assert "Ratios" in full.votes
+    assert full.votes["Ratios"].vote is Vote.PASS
+    assert "Ratios" not in only.votes
+    assert "Activity" in only.votes
+    assert only.votes["Activity"].vote is Vote.PASS
+    assert "Ratios" in full.votes
+    assert full.votes["Ratios"].vote is Vote.PASS
+
+
+@pytest.mark.asyncio
+async def test_engine_empty_plugin_intersection_is_not_halal() -> None:
+    engine = _engine({"AAPL": _ok_equity()})
+    full = await engine.screen("AAPL")
+    assert full.verdict == HALAL
+    narrowed = await engine.screen("AAPL", plugins=["HalalWallet"], finder=False)
+    assert narrowed.required == []
+    assert narrowed.verdict == NOT_HALAL
+    assert full.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_missing_nvidia_key_without_finder_is_enrich_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("config.NVIDIA_API_KEY", "")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("DataFinder must not be built without NVIDIA_API_KEY")
+
+    monkeypatch.setattr("data_finder.DataFinder", boom)
+    engine = _engine(
+        {"AAPL": _ok_equity(interest_income=None)},
+        finder=None,
+    )
+    result = await engine.screen("AAPL")
+    assert result.votes["Ratios"].vote is Vote.ABSTAIN
+    assert result.verdict == NOT_HALAL

@@ -392,12 +392,18 @@ def test_screenshot_cli_write_does_not_patch_10k_job(
     assert "write_job_winner" in src
 
 
-def test_committed_policy_has_screenshot_job_not_must_jobs() -> None:
+def test_committed_policy_has_screenshot_and_must_jobs() -> None:
     nvidia = load_policy(POLICY_PATH).section("nvidia")
     jobs = nvidia.get("jobs") or {}
     assert "screenshot_tickers" in jobs
-    for name in ("3", "6", "7", "12", "checker"):
-        assert name not in jobs
+    assert jobs["screenshot_tickers"].get("winner")
+    assert jobs["screenshot_tickers"].get("fallback_429")
+    for name in ("3", "4", "5", "6", "7", "12", "checker"):
+        assert name in jobs
+        assert jobs[name].get("winner")
+        assert jobs[name].get("fallback_429")
+        assert jobs[name]["winner"] != "minimaxai/minimax-m3"
+        assert jobs[name]["fallback_429"] != "minimaxai/minimax-m3"
     ids = [str(m["id"]) for m in (nvidia.get("bakeoff_models") or [])]
     assert "nvidia/nemotron-ocr-v2" in ids
     assert nvidia.get("ocr_url")

@@ -30,6 +30,16 @@ class DenominatorSource(str, Enum):
 
 
 @dataclass
+class Segment:
+    name: str
+    revenue: float | None
+    revenue_pct: float | None
+    tags: list[str]  # activity.segments.id values only
+    state: FactState
+    excerpt: str | None = None
+
+
+@dataclass
 class PluginVote:
     plugin: str
     vote: Vote
@@ -43,6 +53,7 @@ class Fundamentals:
     quote_type: str = "UNKNOWN"
     sector: str | None = None
     industry: str | None = None
+    gics: str | None = None
     company_name: str | None = None
     market_cap: float | None = None
     trailing_avg_market_cap: float | None = None
@@ -54,7 +65,8 @@ class Fundamentals:
     interest_income: float | None = None
     revenue: float | None = None
     income_statement_present: bool = False
-    segments: list = field(default_factory=list)
+    segments: list[Segment] = field(default_factory=list)
+    business_description: str | None = None
     fact_states: dict[str, FactState] = field(default_factory=dict)
 
 

@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -25,32 +24,32 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from config import LOG_LEVEL, NVIDIA_API_KEY, POLICY_PATH  # noqa: E402
-from nvidia_nim import write_job_winner  # noqa: E402
+from nvidia_nim import (  # noqa: E402
+    all_cited,
+    checker_should_accept,
+    citation_rate,
+    extract_normalized_numbers,
+    numbers_close,
+    payload_has_forbidden,
+    write_job_winner,
+)
 from policy import load_policy  # noqa: E402
 
-# Skip metadata/echo fields; they are not claimed facts.
-_SKIP_NUMBER_KEYS = frozenset({"confidence", "scale", "accepted", "excerpt", "reason"})
-_FORBIDDEN_RE = re.compile(r"\b(NOT_HALAL|HALAL|verdict|core_fail)\b", re.I)
-_NUM_RE = re.compile(
-    r"""
-    (?P<dollar>\$)?
-    (?P<num>
-        \d{1,3}(?:,\d{3})+(?:\.\d+)?
-        |
-        \d+\.\d+
-        |
-        \d+
-    )
-    (?:
-        \s*(?P<word>billions?|millions?|percent)
-        |
-        \s*(?P<sym>%)
-        |
-        (?P<letter>[BbMm])(?![A-Za-z])
-    )?
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
+__all__ = [
+    "TextBakeoffResult",
+    "TextScore",
+    "all_cited",
+    "checker_should_accept",
+    "citation_rate",
+    "extract_normalized_numbers",
+    "finalize_text_bakeoff",
+    "main",
+    "numbers_close",
+    "payload_has_forbidden",
+    "score_canned_fixtures",
+    "score_checker",
+    "score_searcher",
+]
 
 
 @dataclass
@@ -74,40 +73,6 @@ class TextBakeoffResult:
     fallback_429: str = ""
 
 
-def payload_has_forbidden(text: str) -> bool:
-    return _FORBIDDEN_RE.search(text) is not None
-
-
-def extract_normalized_numbers(text: str) -> list[float]:
-    """Scaled magnitudes: strip $ and commas; million×1e6; billion×1e9; % unchanged."""
-    found: list[float] = []
-    for match in _NUM_RE.finditer(text):
-        raw = match.group("num").replace(",", "")
-        try:
-            value = float(raw)
-        except ValueError:
-            continue
-        word = (match.group("word") or "").lower()
-        letter = (match.group("letter") or "").lower()
-        sym = match.group("sym") or ""
-        # Item 1B is an SEC heading, not $1B; scale B/M only with $ or decimal/comma.
-        letter_ok = bool(match.group("dollar")) or (
-            "," in match.group("num") or "." in match.group("num")
-        )
-        if word.startswith("billion") or (letter == "b" and letter_ok):
-            value *= 1_000_000_000.0
-        elif word.startswith("million") or (letter == "m" and letter_ok):
-            value *= 1_000_000.0
-        elif word == "percent" or sym == "%":
-            pass
-        found.append(value)
-    return found
-
-
-def numbers_close(left: float, right: float) -> bool:
-    return math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-3)
-
-
 def _parse_json(text: str) -> Any | None:
     stripped = text.strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", stripped, re.S)
@@ -123,93 +88,6 @@ def _parse_json(text: str) -> Any | None:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             return None
-
-
-def iter_payload_numbers(obj: Any, key: str | None = None) -> list[float]:
-    if obj is None or isinstance(obj, bool):
-        return []
-    if isinstance(obj, (int, float)):
-        if key in _SKIP_NUMBER_KEYS:
-            return []
-        return [float(obj)]
-    if isinstance(obj, str):
-        if key in _SKIP_NUMBER_KEYS:
-            return []
-        return extract_normalized_numbers(obj)
-    if isinstance(obj, dict):
-        found: list[float] = []
-        for inner_key, value in obj.items():
-            found.extend(iter_payload_numbers(value, key=str(inner_key)))
-        return found
-    if isinstance(obj, list):
-        found = []
-        for item in obj:
-            found.extend(iter_payload_numbers(item, key=key))
-        return found
-    return []
-
-
-def iter_payload_tags(obj: Any) -> list[str]:
-    tags: list[str] = []
-    if isinstance(obj, dict):
-        tag = obj.get("tag")
-        if isinstance(tag, str) and tag:
-            tags.append(tag)
-        raw_tags = obj.get("tags")
-        if isinstance(raw_tags, list):
-            tags.extend(
-                str(item) for item in raw_tags if isinstance(item, str) and item
-            )
-        for value in obj.values():
-            tags.extend(iter_payload_tags(value))
-    elif isinstance(obj, list):
-        for item in obj:
-            tags.extend(iter_payload_tags(item))
-    return tags
-
-
-def all_cited(payload: Any, excerpt: str) -> bool:
-    excerpt_nums = extract_normalized_numbers(excerpt)
-    excerpt_cf = excerpt.casefold()
-    numbers = iter_payload_numbers(payload)
-    tags = iter_payload_tags(payload)
-    if not numbers and not tags:
-        return False
-    for number in numbers:
-        if not any(numbers_close(number, hay) for hay in excerpt_nums):
-            return False
-    for tag in tags:
-        if tag.casefold() not in excerpt_cf:
-            return False
-    return True
-
-
-def citation_rate(payload: Any, excerpt: str) -> float:
-    excerpt_nums = extract_normalized_numbers(excerpt)
-    excerpt_cf = excerpt.casefold()
-    numbers = iter_payload_numbers(payload)
-    tags = iter_payload_tags(payload)
-    total = len(numbers) + len(tags)
-    if total == 0:
-        return 0.0
-    cited = 0
-    for number in numbers:
-        if any(numbers_close(number, hay) for hay in excerpt_nums):
-            cited += 1
-    for tag in tags:
-        if tag.casefold() in excerpt_cf:
-            cited += 1
-    return cited / total
-
-
-def checker_should_accept(candidate: Any, excerpt: str) -> bool:
-    raw = candidate if isinstance(candidate, str) else json.dumps(candidate)
-    if payload_has_forbidden(raw):
-        return False
-    parsed = _parse_json(candidate) if isinstance(candidate, str) else candidate
-    if parsed is None:
-        return False
-    return all_cited(parsed, excerpt)
 
 
 def score_searcher(response_text: str, excerpt: str) -> TextScore:

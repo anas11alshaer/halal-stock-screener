@@ -56,6 +56,80 @@ denied_industry_substrings = [
 # Do not add "Financial Data & Stock Exchanges", GICS 40203040 / 40201060,
 # Movies & Entertainment, or Advertising.
 
+[[activity.segments]]
+id = "gaming_interactive_entertainment"
+action = "allow"
+keywords = ["xbox", "activision", "gaming", "game pass", "interactive entertainment"]
+
+[[activity.segments]]
+id = "gaming_gambling_mechanics"
+action = "impure"
+keywords = ["loot box", "social casino"]
+
+[[activity.segments]]
+id = "gaming_adult_content"
+action = "impure"
+keywords = ["adult game", "sexual themes"]
+
+[[activity.segments]]
+id = "online_gambling_operator"
+action = "core_fail"
+keywords = ["sportsbook", "igaming", "online casino"]
+
+[[activity.segments]]
+id = "pork"
+action = "impure"
+keywords = ["pork", "bacon", "ham ", "swine", "hog "]
+
+[[activity.segments]]
+id = "alcohol_retail"
+action = "impure"
+keywords = ["wine", "beer", "spirits", "liquor", "alcoholic beverage"]
+
+[[activity.segments]]
+id = "adult"
+action = "core_fail"
+keywords = ["pornograph", "adult entertainment", "sexually explicit"]
+
+[[activity.segments]]
+id = "weapons"
+action = "impure"
+keywords = ["missiles", "munitions", "firearms", "fighter jet"]
+
+[[activity.segments]]
+id = "insurance_conventional"
+action = "core_fail"
+keywords = ["property and casualty insurance", "life insurance underwriting"]
+
+[[activity.segments]]
+id = "music_film"
+action = "core_fail"
+keywords = ["motion picture", "film studio", "recorded music", "cinema"]
+
+[[activity.segments]]
+id = "ads_video"
+action = "impure"
+keywords = ["youtube ads", "display advertising", "video advertising"]
+
+[[activity.segments]]
+id = "ads_text"
+action = "allow"
+keywords = ["search advertising", "text ads"]
+
+[[activity.segments]]
+id = "cannabis"
+action = "core_fail"
+keywords = ["cannabis", "marijuana", "thc"]
+
+[finder]
+max_excerpt_chars = 12000
+max_tokens = 2048
+edgar_min_interval_seconds = 0.12
+max_searcher_calls_per_equity = 4
+max_checker_calls_per_equity = 4
+searcher_attempts_per_field = 3
+max_holdings_finder_per_etf = 40
+
 [ratios]
 debt_to_market_cap_pct = 33.0
 # Absent use_trailing_avg_market_cap: spot market cap.
@@ -192,3 +266,32 @@ kind = "vlm"
 [nvidia.jobs.screenshot_tickers]
 winner = "minimaxai/minimax-m3"
 fallback_429 = "nvidia/nemotron-nano-12b-v2-vl"
+
+# MiniMax-M3 is not a searcher/checker default.
+[nvidia.jobs.3]
+winner = "nvidia/nemotron-3-nano-30b-a3b"
+fallback_429 = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+
+[nvidia.jobs.4]
+winner = "nvidia/nemotron-3-nano-30b-a3b"
+fallback_429 = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+
+[nvidia.jobs.5]
+winner = "nvidia/nemotron-3-nano-30b-a3b"
+fallback_429 = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+
+[nvidia.jobs.6]
+winner = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+fallback_429 = "nvidia/nemotron-3-nano-30b-a3b"
+
+[nvidia.jobs.7]
+winner = "nvidia/nemotron-3.5-lightning-30b-a3b"
+fallback_429 = "nvidia/nemotron-3-nano-30b-a3b"
+
+[nvidia.jobs.12]
+winner = "meta/llama-3.3-70b-instruct"
+fallback_429 = "nvidia/nemotron-3-nano-30b-a3b"
+
+[nvidia.jobs.checker]
+winner = "openai/gpt-oss-20b"
+fallback_429 = "nvidia/llama-3.3-nemotron-super-49b-v1.5"

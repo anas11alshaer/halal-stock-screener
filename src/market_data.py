@@ -6,7 +6,8 @@ import asyncio
 import calendar
 import logging
 import math
-from collections.abc import Sequence
+import time
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -28,6 +29,83 @@ _RATIO_FACT_FIELDS = (
 )
 
 logger = logging.getLogger(__name__)
+
+_sec_last = 0.0
+_TICKER_MAPS: dict[int, dict[str, str]] = {}
+
+
+async def paced_sec_get(
+    http: httpx.AsyncClient,
+    url: str,
+    policy: Policy,
+    *,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
+) -> httpx.Response:
+    """One EDGAR clock for company_tickers.json and 10-K GETs."""
+    global _sec_last
+    sleeper = sleep or asyncio.sleep
+    raw = policy.get("finder", "edgar_min_interval_seconds", default=0.12)
+    try:
+        interval = float(raw)
+    except (TypeError, ValueError):
+        interval = 0.12
+    if interval < 0:
+        interval = 0.0
+    wait = interval - (time.monotonic() - _sec_last)
+    if wait > 0:
+        await sleeper(wait)
+    response = await http.get(url, headers=policy.edgar_headers())
+    _sec_last = time.monotonic()
+    return response
+
+
+def parse_company_tickers(payload: Any) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    rows = payload.values() if isinstance(payload, dict) else payload
+    for rec in rows:
+        if not isinstance(rec, dict):
+            continue
+        ticker = str(rec.get("ticker") or "").upper()
+        cik = rec.get("cik_str") or rec.get("cik")
+        if ticker and cik is not None:
+            mapping[ticker] = str(cik).zfill(10)
+    return mapping
+
+
+async def load_company_tickers(
+    *, http: httpx.AsyncClient | None, policy: Policy
+) -> dict[str, str]:
+    if http is None:
+        return {}
+    cached = _TICKER_MAPS.get(id(http))
+    if cached is not None:
+        return cached
+    url = str(policy.section("sources")["sec_company_tickers_url"])
+    try:
+        response = await paced_sec_get(http, url, policy)
+        response.raise_for_status()
+        mapping = parse_company_tickers(response.json())
+    except Exception as exc:
+        logger.warning("company_tickers failed: %s", exc)
+        return {}
+    _TICKER_MAPS[id(http)] = mapping
+    return mapping
+
+
+async def cik_for(
+    ticker: str,
+    *,
+    http: httpx.AsyncClient | None,
+    policy: Policy,
+    mapping: dict[str, str] | None = None,
+) -> str | None:
+    table = (
+        mapping
+        if mapping is not None
+        else await load_company_tickers(http=http, policy=policy)
+    )
+    key = ticker.upper().strip()
+    return table.get(key)
 
 
 def _to_float(value: Any) -> float | None:
@@ -241,29 +319,17 @@ class YFinanceMarketData(MarketData):
 
     async def _cik_for(self, ticker: str) -> str | None:
         mapping = await self._company_tickers()
-        return mapping.get(ticker.upper())
+        return await cik_for(
+            ticker, http=self._http, policy=self._policy, mapping=mapping
+        )
 
     async def _company_tickers(self) -> dict[str, str]:
         if self._ticker_ciks is not None:
             return self._ticker_ciks
-        if self._http is None:
-            self._ticker_ciks = {}
-            return self._ticker_ciks
-        url = str(self._policy.section("sources")["sec_company_tickers_url"])
-        response = await self._http.get(url, headers=self._policy.edgar_headers())
-        response.raise_for_status()
-        payload = response.json()
-        mapping: dict[str, str] = {}
-        rows = payload.values() if isinstance(payload, dict) else payload
-        for rec in rows:
-            if not isinstance(rec, dict):
-                continue
-            t = str(rec.get("ticker") or "").upper()
-            cik = rec.get("cik_str") or rec.get("cik")
-            if t and cik is not None:
-                mapping[t] = str(cik).zfill(10)
-        self._ticker_ciks = mapping
-        return mapping
+        self._ticker_ciks = await load_company_tickers(
+            http=self._http, policy=self._policy
+        )
+        return self._ticker_ciks
 
 
 def compute_trailing_avg_market_cap(

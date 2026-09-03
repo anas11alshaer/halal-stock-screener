@@ -306,8 +306,13 @@ def test_jobs_cli_missing_job_table_exits_2(
     committed = load_policy(POLICY_PATH).section("nvidia")
     assert nvidia.get("winner") == committed.get("winner")
     jobs = _jobs(policy_copy)
+    committed_jobs = _jobs(POLICY_PATH)
     assert "notes" not in jobs
-    assert "3" not in jobs and "6" not in jobs and "checker" not in jobs
+    for name in ("3", "4", "5", "6", "7", "12", "checker", "screenshot_tickers"):
+        assert jobs[name]["winner"] == committed_jobs[name]["winner"]
+        assert jobs[name]["fallback_429"] == committed_jobs[name]["fallback_429"]
+    assert committed_jobs["3"]["winner"] != "minimaxai/minimax-m3"
+    assert committed_jobs["checker"]["winner"] != "minimaxai/minimax-m3"
 
 
 @pytest.mark.asyncio
