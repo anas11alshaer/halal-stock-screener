@@ -15,6 +15,7 @@ from market_data import MarketData, YFinanceMarketData
 from plugins.activity import ActivityPlugin
 from plugins.base import (
     Fundamentals,
+    HoldingScreenMode,
     Plugin,
     PluginVote,
     ScreenContext,
@@ -96,13 +97,25 @@ class VerdictEngine:
             "NportHoldings": NportHoldingsPlugin(
                 self.policy,
                 nport=self._nport,
-                screen_holding=self._screen_holding_verdict,
+                screen_holding=self._screen_holding,
             ),
         }
 
-    async def _screen_holding_verdict(self, ticker: str, depth: int) -> str:
-        result = await self.screen(ticker, depth=depth)
-        return result.verdict
+    async def _screen_holding(
+        self,
+        ticker: str,
+        depth: int,
+        mode: HoldingScreenMode,
+        finder: bool,
+    ) -> ScreenResult:
+        if mode is HoldingScreenMode.ACTIVITY_ONLY:
+            return await self.screen(
+                ticker,
+                depth=depth,
+                plugins=["Activity", "HalalWallet"],
+                finder=False,
+            )
+        return await self.screen(ticker, depth=depth, finder=finder)
 
     async def _ensure_finder(self) -> None:
         if self._finder is not None:
@@ -164,7 +177,12 @@ class VerdictEngine:
             fundamentals=fundamentals,
             depth=depth,
         )
-        if finder and not is_fund(quote_type, self.policy):
+        # Look-through UNKNOWN is junk; top-level UNKNOWN may still enrich.
+        if (
+            finder
+            and not is_fund(quote_type, self.policy)
+            and not (depth > 0 and quote_type == "UNKNOWN")
+        ):
             await self._ensure_finder()
             if self._finder is not None:
                 try:

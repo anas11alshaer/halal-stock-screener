@@ -21,6 +21,7 @@ from plugins.base import (
     DenominatorSource,
     FactState,
     Fundamentals,
+    HoldingScreenMode,
     PluginVote,
     Segment,
     Vote,
@@ -96,6 +97,25 @@ def _engine(
         halalwallet_records={} if hw_records is None else hw_records,
         finder=injected,
     )
+
+
+def _etf_profile(ticker: str = "SPY") -> Fundamentals:
+    return Fundamentals(ticker=ticker, quote_type="ETF", sector="Financial Services")
+
+
+async def _record_holding_screens(engine: VerdictEngine) -> list[tuple]:
+    await engine._ensure_clients()
+    plugin = engine._plugins["NportHoldings"]
+    inner = plugin._screen_holding
+    calls: list[tuple] = []
+
+    async def rec(ticker: str, depth: int, mode, finder: bool):
+        result = await inner(ticker, depth, mode, finder)
+        calls.append((ticker, depth, mode, finder, result))
+        return result
+
+    plugin._screen_holding = rec
+    return calls
 
 
 def test_fusion_any_fail_is_not_halal() -> None:
@@ -1075,6 +1095,45 @@ async def test_coverage_floor_comes_from_policy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_nport_scoring_keys_missing_fail_closed() -> None:
+    report = NportReport(
+        series_id="S1",
+        holdings=[Holding(name="Apple", pct=0.98, ticker="AAPL", asset_cat="EC")],
+    )
+    profiles = {"SPY": _etf_profile(), "AAPL": _ok_equity()}
+    present = await _engine(profiles, nport=FakeNport({"SPY": report})).screen("SPY")
+    assert present.votes["NportHoldings"].vote is Vote.PASS
+    assert present.verdict == HALAL
+
+    for key in (
+        "activity_fail_epsilon_weight",
+        "ratio_fail_weight_cap",
+        "ratio_materiality_weight",
+    ):
+        policy = load_policy(POLICY_PATH)
+        del policy.raw["etf"][key]
+        missing = await _engine(
+            profiles, nport=FakeNport({"SPY": report}), policy=policy
+        ).screen("SPY")
+        assert missing.votes["NportHoldings"].vote is Vote.FAIL
+        assert "incomplete" in missing.votes["NportHoldings"].reason
+        assert missing.votes["NportHoldings"].metrics["missing_policy_key"] == (
+            f"etf.{key}"
+        )
+        assert missing.verdict == NOT_HALAL
+
+    bad = load_policy(POLICY_PATH)
+    bad.raw["etf"]["activity_fail_epsilon_weight"] = "not-a-number"
+    invalid = await _engine(
+        profiles, nport=FakeNport({"SPY": report}), policy=bad
+    ).screen("SPY")
+    assert invalid.votes["NportHoldings"].vote is Vote.FAIL
+    assert invalid.votes["NportHoldings"].metrics["missing_policy_key"] == (
+        "etf.activity_fail_epsilon_weight"
+    )
+
+
+@pytest.mark.asyncio
 async def test_nport_lookthrough_pass_when_holdings_halal() -> None:
     report = NportReport(
         series_id="S000001",
@@ -1266,7 +1325,10 @@ async def test_nport_fail_holding_is_not_halal() -> None:
     )
     result = await engine.screen("SPY")
     assert result.votes["NportHoldings"].vote is Vote.FAIL
-    assert "JPM" in result.votes["NportHoldings"].metrics["failed_holdings"]
+    metrics = result.votes["NportHoldings"].metrics
+    assert "JPM" in metrics["activity_failed_holdings"]
+    assert "failed_holdings" not in metrics
+    assert "failed_count" not in metrics
     assert result.verdict == NOT_HALAL
 
 
@@ -1858,12 +1920,47 @@ def test_eval_screener_fixture_list_concatenates_stocks_and_etfs() -> None:
     assert {"SPY", "SPUS", "HLAL"} & set(tickers)
 
 
+def test_compare_mz_bar_reads_new_nport_fail_metrics() -> None:
+    path = ROOT / "scripts" / "compare_mz_bar.py"
+    spec = importlib.util.spec_from_file_location("compare_mz_bar_helpers", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = ScreenResult(
+        ticker="SPY",
+        quote_type="ETF",
+        verdict=NOT_HALAL,
+        votes={
+            "NportHoldings": PluginVote(
+                "NportHoldings",
+                Vote.FAIL,
+                metrics={
+                    "coverage": 0.98,
+                    "activity_failed_holdings": ["JPM"],
+                    "nested_fund_failed": ["QQQ"],
+                    "failed_holdings": ["SHOULD_NOT_USE"],
+                    "failed_count": 99,
+                },
+            )
+        },
+        required=["NportHoldings"],
+    )
+    assert module._failed_holdings(result) == ["JPM", "QQQ"]
+    cell = module._vote_cell(result, ["NportHoldings"])
+    assert "JPM" in cell
+    assert "QQQ" in cell
+    assert "SHOULD_NOT_USE" not in cell
+    assert "failed_count=99" not in cell
+
+
 class _SpyFinder:
     def __init__(self) -> None:
         self.calls = 0
+        self.tickers: list[str] = []
 
     async def enrich(self, ctx):
         self.calls += 1
+        self.tickers.append(ctx.ticker)
         return ctx.fundamentals
 
 
@@ -1933,3 +2030,492 @@ async def test_missing_nvidia_key_without_finder_is_enrich_noop(
     result = await engine.screen("AAPL")
     assert result.votes["Ratios"].vote is Vote.ABSTAIN
     assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_engine_enriches_top_level_unknown_not_lookthrough_junk() -> None:
+    spy = _SpyFinder()
+    await _engine(
+        {"ZZZZ": Fundamentals(ticker="ZZZZ", quote_type="UNKNOWN")},
+        finder=spy,
+    ).screen("ZZZZ")
+    assert "ZZZZ" in spy.tickers
+
+    lookthrough = _SpyFinder()
+    report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.97, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Lennar B", pct=0.01, ticker="LEN/B", asset_cat="EC"),
+            Holding(name="Cash", pct=0.02, ticker=None, asset_cat="STIV"),
+        ],
+    )
+    await _engine(
+        {"SPY": _etf_profile(), "AAPL": _ok_equity()},
+        nport=FakeNport({"SPY": report}),
+        finder=lookthrough,
+    ).screen("SPY")
+    assert "AAPL" in lookthrough.tickers
+    assert "LEN/B" not in lookthrough.tickers
+
+
+@pytest.mark.asyncio
+async def test_nport_activity_only_ignores_child_verdict() -> None:
+    report = NportReport(
+        series_id="S000001",
+        holdings=[
+            Holding(name="Microsoft", pct=0.996, ticker="MSFT", asset_cat="EC"),
+            Holding(name="Apple", pct=0.004, ticker="AAPL", asset_cat="EC"),
+        ],
+    )
+    engine = _engine(
+        {
+            "SPY": _etf_profile(),
+            "MSFT": _ok_equity(ticker="MSFT"),
+            "AAPL": _ok_equity(),
+        },
+        nport=FakeNport({"SPY": report}),
+    )
+    await engine._ensure_clients()
+    plugin = engine._plugins["NportHoldings"]
+    inner = plugin._screen_holding
+    calls: list[tuple] = []
+
+    async def rec(ticker: str, depth: int, mode, finder: bool):
+        if ticker == "AAPL" and mode is HoldingScreenMode.ACTIVITY_ONLY:
+            forced = ScreenResult(
+                ticker="AAPL",
+                quote_type="EQUITY",
+                verdict=NOT_HALAL,
+                votes={
+                    "Activity": PluginVote("Activity", Vote.PASS),
+                    "HalalWallet": PluginVote("HalalWallet", Vote.ABSTAIN),
+                },
+                required=["Activity"],
+            )
+            calls.append((ticker, mode, finder, forced))
+            return forced
+        child = await inner(ticker, depth, mode, finder)
+        calls.append((ticker, mode, finder, child))
+        return child
+
+    plugin._screen_holding = rec
+    result = await engine.screen("SPY")
+    aapl = [c for c in calls if c[0] == "AAPL"]
+    assert aapl
+    assert aapl[0][1] is HoldingScreenMode.ACTIVITY_ONLY
+    assert aapl[0][3].verdict == NOT_HALAL
+    assert "Ratios" not in aapl[0][3].votes
+    assert aapl[0][3].votes["Activity"].vote is Vote.PASS
+    nport = result.votes["NportHoldings"]
+    assert nport.vote is Vote.PASS
+    assert result.verdict == HALAL
+    assert "AAPL" not in nport.metrics["activity_failed_holdings"]
+    assert nport.metrics["coverage"] >= 0.95
+    assert nport.metrics["unresolved_ratio_weight"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_nport_activity_only_holes_are_not_uncovered() -> None:
+    small = [
+        Holding(name=f"W{i:02d}", pct=0.004, ticker=f"W{i:02d}", asset_cat="EC")
+        for i in range(15)
+    ]
+    report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.94, ticker="AAPL", asset_cat="EC"),
+            *small,
+        ],
+    )
+    profiles = {
+        "SPY": _etf_profile(),
+        "AAPL": _ok_equity(),
+        **{
+            f"W{i:02d}": _ok_equity(ticker=f"W{i:02d}", interest_income=None)
+            for i in range(15)
+        },
+    }
+    engine = _engine(profiles, nport=FakeNport({"SPY": report}))
+    calls = await _record_holding_screens(engine)
+    result = await engine.screen("SPY")
+    modes = {ticker: mode for ticker, _depth, mode, _finder, child in calls}
+    for i in range(15):
+        ticker = f"W{i:02d}"
+        assert modes[ticker] is HoldingScreenMode.ACTIVITY_ONLY
+        child = next(c[4] for c in calls if c[0] == ticker)
+        assert "Ratios" not in child.votes
+        assert child.votes["Activity"].vote is Vote.PASS
+    nport = result.votes["NportHoldings"]
+    assert nport.vote is Vote.PASS
+    assert result.verdict == HALAL
+    assert nport.metrics["unresolved_ratio_weight"] == pytest.approx(0.0)
+    assert nport.metrics["coverage"] == pytest.approx(1.0)
+    assert nport.metrics["activity_failed_holdings"] == []
+
+
+@pytest.mark.asyncio
+async def test_nport_material_ratio_holes_are_uncovered_not_haram() -> None:
+    holes_ok = [
+        Holding(name="Apple", pct=0.97, ticker="AAPL", asset_cat="EC"),
+        Holding(name="H1", pct=0.01, ticker="H1", asset_cat="EC"),
+        Holding(name="H2", pct=0.01, ticker="H2", asset_cat="EC"),
+        Holding(name="H3", pct=0.01, ticker="H3", asset_cat="EC"),
+    ]
+    profiles_ok = {
+        "SPY": _etf_profile(),
+        "AAPL": _ok_equity(),
+        "H1": _ok_equity(ticker="H1", interest_income=None),
+        "H2": _ok_equity(ticker="H2", interest_income=None),
+        "H3": _ok_equity(ticker="H3", interest_income=None),
+    }
+    three = await _engine(
+        profiles_ok, nport=FakeNport({"SPY": NportReport("S1", holes_ok)})
+    ).screen("SPY")
+    m3 = three.votes["NportHoldings"].metrics
+    assert three.votes["NportHoldings"].vote is Vote.PASS
+    assert three.verdict == HALAL
+    assert m3["coverage"] == pytest.approx(0.97)
+    assert m3["unresolved_ratio_weight"] == pytest.approx(0.03)
+    assert m3["activity_failed_holdings"] == []
+
+    holes_fail = [
+        Holding(name="Apple", pct=0.94, ticker="AAPL", asset_cat="EC"),
+        *[
+            Holding(name=f"H{i}", pct=0.01, ticker=f"H{i}", asset_cat="EC")
+            for i in range(1, 7)
+        ],
+    ]
+    profiles_fail = {
+        "SPY": _etf_profile(),
+        "AAPL": _ok_equity(),
+        **{
+            f"H{i}": _ok_equity(ticker=f"H{i}", interest_income=None)
+            for i in range(1, 7)
+        },
+    }
+    six = await _engine(
+        profiles_fail, nport=FakeNport({"SPY": NportReport("S1", holes_fail)})
+    ).screen("SPY")
+    m6 = six.votes["NportHoldings"].metrics
+    assert six.votes["NportHoldings"].vote is Vote.FAIL
+    assert "incomplete" in six.votes["NportHoldings"].reason
+    assert six.verdict == NOT_HALAL
+    assert m6["coverage"] == pytest.approx(0.94)
+    assert m6["unresolved_ratio_weight"] == pytest.approx(0.06)
+    assert m6["activity_failed_holdings"] == []
+
+
+@pytest.mark.asyncio
+async def test_nport_ratio_fail_weight_cap() -> None:
+    over = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.94, ticker="AAPL", asset_cat="EC"),
+            Holding(name="DebtCo", pct=0.06, ticker="DEBT", asset_cat="EC"),
+        ],
+    )
+    under = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.96, ticker="AAPL", asset_cat="EC"),
+            Holding(name="DebtCo", pct=0.04, ticker="DEBT", asset_cat="EC"),
+        ],
+    )
+    at_cap = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.95, ticker="AAPL", asset_cat="EC"),
+            Holding(name="DebtCo", pct=0.05, ticker="DEBT", asset_cat="EC"),
+        ],
+    )
+    profiles = {
+        "SPY": _etf_profile(),
+        "AAPL": _ok_equity(),
+        "DEBT": _ok_equity(ticker="DEBT", total_debt=400.0),
+    }
+    fail = await _engine(profiles, nport=FakeNport({"SPY": over})).screen("SPY")
+    fm = fail.votes["NportHoldings"].metrics
+    assert fail.votes["NportHoldings"].vote is Vote.FAIL
+    assert fail.verdict == NOT_HALAL
+    assert fm["ratio_fail_weight"] == pytest.approx(0.06)
+    assert fm["activity_failed_holdings"] == []
+    assert fm["coverage"] >= 0.95
+
+    ok = await _engine(profiles, nport=FakeNport({"SPY": under})).screen("SPY")
+    om = ok.votes["NportHoldings"].metrics
+    assert ok.votes["NportHoldings"].vote is Vote.PASS
+    assert ok.verdict == HALAL
+    assert om["ratio_fail_weight"] == pytest.approx(0.04)
+    assert om["activity_failed_holdings"] == []
+
+    edge = await _engine(profiles, nport=FakeNport({"SPY": at_cap})).screen("SPY")
+    em = edge.votes["NportHoldings"].metrics
+    assert edge.votes["NportHoldings"].vote is Vote.FAIL
+    assert edge.verdict == NOT_HALAL
+    assert em["ratio_fail_weight"] == pytest.approx(0.05)
+    assert em["activity_failed_holdings"] == []
+    assert em["coverage"] >= 0.95
+
+
+@pytest.mark.asyncio
+async def test_nport_activity_fail_any_weight() -> None:
+    report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.996, ticker="AAPL", asset_cat="EC"),
+            Holding(name="JPMorgan", pct=0.004, ticker="JPM", asset_cat="EC"),
+        ],
+    )
+    engine = _engine(
+        {
+            "SPY": _etf_profile(),
+            "AAPL": _ok_equity(),
+            "JPM": _ok_equity(
+                ticker="JPM",
+                sector="Financial Services",
+                industry="Banks - Diversified",
+            ),
+        },
+        nport=FakeNport({"SPY": report}),
+    )
+    calls = await _record_holding_screens(engine)
+    result = await engine.screen("SPY")
+    jpm = [c for c in calls if c[0] == "JPM"]
+    assert jpm
+    assert jpm[0][2] is HoldingScreenMode.ACTIVITY_ONLY
+    assert jpm[0][4].votes["Activity"].vote is Vote.FAIL
+    nport = result.votes["NportHoldings"]
+    assert nport.vote is Vote.FAIL
+    assert result.verdict == NOT_HALAL
+    assert "JPM" in nport.metrics["activity_failed_holdings"]
+    assert nport.metrics["coverage"] >= 0.95
+
+
+@pytest.mark.asyncio
+async def test_nport_nested_fund_is_activity_fail_not_uncovered() -> None:
+    report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.94, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Qqq", pct=0.06, ticker="QQQ", asset_cat="EC"),
+        ],
+    )
+    engine = _engine(
+        {
+            "SPY": _etf_profile(),
+            "QQQ": _etf_profile("QQQ"),
+            "AAPL": _ok_equity(),
+        },
+        nport=FakeNport({"SPY": report}),
+    )
+    result = await engine.screen("SPY")
+    nport = result.votes["NportHoldings"]
+    metrics = nport.metrics
+    assert nport.vote is Vote.FAIL
+    assert result.verdict == NOT_HALAL
+    assert "QQQ" in metrics["nested_fund_failed"]
+    assert "QQQ" not in metrics["activity_failed_holdings"]
+    assert metrics["unresolved_ratio_weight"] == pytest.approx(0.0)
+    assert metrics["coverage"] >= 0.95
+
+
+@pytest.mark.asyncio
+async def test_nport_finder_cap_and_reset() -> None:
+    spy = _SpyFinder()
+    holdings_a = [
+        Holding(name=f"T{i:02d}", pct=0.024, ticker=f"T{i:02d}", asset_cat="EC")
+        for i in range(40)
+    ]
+    holdings_a.append(Holding(name="T40", pct=0.006, ticker="T40", asset_cat="EC"))
+    holdings_a.append(Holding(name="Cash", pct=0.034, ticker=None, asset_cat="STIV"))
+    holdings_b = [
+        Holding(name=f"U{i:02d}", pct=0.024, ticker=f"U{i:02d}", asset_cat="EC")
+        for i in range(40)
+    ]
+    holdings_b.append(Holding(name="U40", pct=0.006, ticker="U40", asset_cat="EC"))
+    holdings_b.append(Holding(name="Cash", pct=0.034, ticker=None, asset_cat="STIV"))
+    profiles = {
+        "SPY": _etf_profile(),
+        "QQQ": _etf_profile("QQQ"),
+        **{f"T{i:02d}": _ok_equity(ticker=f"T{i:02d}") for i in range(40)},
+        "T40": _ok_equity(ticker="T40", interest_income=None),
+        **{f"U{i:02d}": _ok_equity(ticker=f"U{i:02d}") for i in range(40)},
+        "U40": _ok_equity(ticker="U40", interest_income=None),
+    }
+    engine = _engine(
+        profiles,
+        nport=FakeNport(
+            {
+                "SPY": NportReport("S1", holdings_a),
+                "QQQ": NportReport("S2", holdings_b),
+            }
+        ),
+        finder=spy,
+    )
+    calls = await _record_holding_screens(engine)
+    first = await engine.screen("SPY")
+    first_finder = {
+        ticker: finder
+        for ticker, _depth, _mode, finder, _result in calls
+        if ticker.startswith("T")
+    }
+    assert [first_finder[f"T{i:02d}"] for i in range(40)] == [True] * 40
+    assert first_finder["T40"] is False
+    assert "T40" not in spy.tickers
+    for i in range(40):
+        assert f"T{i:02d}" in spy.tickers
+    fm = first.votes["NportHoldings"].metrics
+    assert first.votes["NportHoldings"].vote is Vote.PASS
+    assert first.verdict == HALAL
+    assert "T40" not in fm["activity_failed_holdings"]
+    assert fm["unresolved_ratio_weight"] == pytest.approx(0.006)
+    assert fm["coverage"] >= 0.95
+
+    spy.tickers.clear()
+    del calls[:]
+    second = await engine.screen("QQQ")
+    second_finder = {
+        ticker: finder
+        for ticker, _depth, _mode, finder, _result in calls
+        if ticker.startswith("U")
+    }
+    assert [second_finder[f"U{i:02d}"] for i in range(40)] == [True] * 40
+    assert second_finder["U40"] is False
+    assert "U40" not in spy.tickers
+    for i in range(40):
+        assert f"U{i:02d}" in spy.tickers
+    assert second.votes["NportHoldings"].vote is Vote.PASS
+    assert second.verdict == HALAL
+
+
+@pytest.mark.asyncio
+async def test_nport_slash_ticker_is_junk_not_activity_fail() -> None:
+    spy = _SpyFinder()
+    report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.97, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Lennar B", pct=0.01, ticker="LEN/B", asset_cat="EC"),
+            Holding(name="Cash", pct=0.02, ticker=None, asset_cat="STIV"),
+        ],
+    )
+    engine = _engine(
+        {"SPY": _etf_profile(), "AAPL": _ok_equity()},
+        nport=FakeNport({"SPY": report}),
+        finder=spy,
+    )
+    result = await engine.screen("SPY")
+    metrics = result.votes["NportHoldings"].metrics
+    assert "LEN/B" in metrics["junk_ids"]
+    assert "LEN/B" not in metrics["activity_failed_holdings"]
+    assert metrics["uncovered_weight"] == pytest.approx(0.01)
+    assert "LEN/B" not in spy.tickers
+    assert result.votes["NportHoldings"].vote is Vote.PASS
+    assert result.verdict == HALAL
+
+    six_pct = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.94, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Lennar B", pct=0.06, ticker="LEN/B", asset_cat="EC"),
+        ],
+    )
+    hole = await _engine(
+        {"SPY": _etf_profile(), "AAPL": _ok_equity()},
+        nport=FakeNport({"SPY": six_pct}),
+        finder=_SpyFinder(),
+    ).screen("SPY")
+    hm = hole.votes["NportHoldings"].metrics
+    assert hole.votes["NportHoldings"].vote is Vote.FAIL
+    assert "incomplete" in hole.votes["NportHoldings"].reason
+    assert hole.verdict == NOT_HALAL
+    assert hm["coverage"] == pytest.approx(0.94)
+    assert "LEN/B" in hm["junk_ids"]
+    assert hm["activity_failed_holdings"] == []
+
+
+@pytest.mark.asyncio
+async def test_nport_hw_conditional_ignored_not_halal_fails() -> None:
+    cond_report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Csx", pct=0.97, ticker="CSX", asset_cat="EC"),
+            Holding(name="Cash", pct=0.03, ticker=None, asset_cat="STIV"),
+        ],
+    )
+    fail_report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.99, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Overlay", pct=0.01, ticker="KO", asset_cat="EC"),
+        ],
+    )
+    cond = await _engine(
+        {"SPY": _etf_profile(), "CSX": _ok_equity(ticker="CSX")},
+        nport=FakeNport({"SPY": cond_report}),
+        hw_records={"CSX": {"verdict": "conditional"}},
+    ).screen("SPY")
+    assert cond.votes["NportHoldings"].vote is Vote.PASS
+    assert cond.verdict == HALAL
+    assert "CSX" not in cond.votes["NportHoldings"].metrics["activity_failed_holdings"]
+
+    failed = await _engine(
+        {
+            "SPY": _etf_profile(),
+            "AAPL": _ok_equity(),
+            "KO": _ok_equity(ticker="KO"),
+        },
+        nport=FakeNport({"SPY": fail_report}),
+        hw_records={"KO": {"verdict": "not_halal"}},
+    ).screen("SPY")
+    assert failed.votes["NportHoldings"].vote is Vote.FAIL
+    assert failed.verdict == NOT_HALAL
+    assert "KO" in failed.votes["NportHoldings"].metrics["activity_failed_holdings"]
+
+
+@pytest.mark.asyncio
+async def test_nport_full_then_activity_only_cache_has_no_ratios() -> None:
+    spy = _SpyFinder()
+    full_report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Microsoft", pct=0.97, ticker="MSFT", asset_cat="EC"),
+            Holding(name="Cash", pct=0.03, ticker=None, asset_cat="STIV"),
+        ],
+    )
+    small_report = NportReport(
+        series_id="S2",
+        holdings=[
+            Holding(name="Apple", pct=0.996, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Microsoft", pct=0.004, ticker="MSFT", asset_cat="EC"),
+        ],
+    )
+    engine = _engine(
+        {
+            "SPY": _etf_profile(),
+            "QQQ": _etf_profile("QQQ"),
+            "MSFT": _ok_equity(
+                ticker="MSFT",
+                sector="Technology",
+                industry="Software - Infrastructure",
+            ),
+            "AAPL": _ok_equity(),
+        },
+        nport=FakeNport({"SPY": full_report, "QQQ": small_report}),
+        finder=spy,
+    )
+    calls = await _record_holding_screens(engine)
+    await engine.screen("SPY")
+    full_msft = [c for c in calls if c[0] == "MSFT"]
+    assert full_msft
+    assert full_msft[0][2] is HoldingScreenMode.FULL
+    assert "Ratios" in full_msft[0][4].votes
+    del calls[:]
+    await engine.screen("QQQ")
+    small_msft = [c for c in calls if c[0] == "MSFT"]
+    assert small_msft
+    assert small_msft[0][2] is HoldingScreenMode.ACTIVITY_ONLY
+    assert small_msft[0][3] is False
+    assert "Ratios" not in small_msft[0][4].votes
+    assert small_msft[0][4].votes["Activity"].vote is Vote.PASS

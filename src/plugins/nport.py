@@ -13,11 +13,18 @@ from typing import Any
 
 import httpx
 
-from plugins.base import Plugin, PluginVote, ScreenContext, Vote, is_fund
+from plugins.base import (
+    HoldingScreenMode,
+    Plugin,
+    PluginVote,
+    ScreenContext,
+    Vote,
+    is_fund,
+)
 
 logger = logging.getLogger(__name__)
 
-ScreenHolding = Callable[[str, int], Awaitable[str]]
+ScreenHolding = Callable[[str, int, HoldingScreenMode, bool], Awaitable[Any]]
 
 
 @dataclass
@@ -27,6 +34,53 @@ class Holding:
     ticker: str | None = None
     asset_cat: str | None = None
     cusip: str | None = None
+
+
+@dataclass
+class _HoldingTally:
+    activity_failed: list[str] = field(default_factory=list)
+    nested_fund_failed: list[str] = field(default_factory=list)
+    junk_ids: list[str] = field(default_factory=list)
+    ratio_fail_weight: float = 0.0
+    unresolved_ratio_weight: float = 0.0
+    junk_weight: float = 0.0
+
+
+def score_holding(
+    holding: Holding,
+    result: Any,
+    mode: HoldingScreenMode,
+    fund_quote_types: set[str],
+    tally: _HoldingTally,
+) -> None:
+    # Do not read result.verdict.
+    ticker = holding.ticker
+    act = result.votes.get("Activity")
+    hw = result.votes.get("HalalWallet")
+    nport_v = result.votes.get("NportHoldings")
+    ratios = result.votes.get("Ratios")
+    quote = (result.quote_type or "UNKNOWN").upper()
+    if quote == "UNKNOWN":
+        if ticker:
+            tally.junk_ids.append(ticker)
+        tally.junk_weight += holding.pct
+        return
+    if quote in fund_quote_types or (nport_v is not None and nport_v.vote is Vote.FAIL):
+        if ticker:
+            tally.nested_fund_failed.append(ticker)
+        return
+    if act is not None and act.vote is Vote.FAIL and ticker:
+        if ticker not in tally.activity_failed:
+            tally.activity_failed.append(ticker)
+    if hw is not None and hw.vote is Vote.FAIL and ticker:
+        if ticker not in tally.activity_failed:
+            tally.activity_failed.append(ticker)
+    if mode is HoldingScreenMode.ACTIVITY_ONLY or ratios is None:
+        return
+    if ratios.vote is Vote.FAIL:
+        tally.ratio_fail_weight += holding.pct
+    elif ratios.vote is Vote.ABSTAIN:
+        tally.unresolved_ratio_weight += holding.pct
 
 
 @dataclass
@@ -134,25 +188,130 @@ class NportHoldingsPlugin(Plugin):
                 metrics=metrics,
             )
 
-        failed: list[str] = []
-        for holding in identified:
+        weights: dict[str, float] = {}
+        for name in (
+            "activity_fail_epsilon_weight",
+            "ratio_fail_weight_cap",
+            "ratio_materiality_weight",
+        ):
+            raw = self.policy.get("etf", name)
+            key = f"etf.{name}"
+            if raw is None:
+                metrics["missing_policy_key"] = key
+                return PluginVote(
+                    plugin=self.name,
+                    vote=Vote.FAIL,
+                    reason="incomplete N-PORT holdings",
+                    metrics=metrics,
+                )
+            try:
+                weights[name] = float(raw)
+            except (TypeError, ValueError):
+                metrics["missing_policy_key"] = key
+                return PluginVote(
+                    plugin=self.name,
+                    vote=Vote.FAIL,
+                    reason="incomplete N-PORT holdings",
+                    metrics=metrics,
+                )
+        epsilon = weights["activity_fail_epsilon_weight"]
+        ratio_fail_cap = weights["ratio_fail_weight_cap"]
+        materiality = weights["ratio_materiality_weight"]
+
+        identified.sort(key=lambda h: h.pct, reverse=True)
+        cap = int(
+            self.policy.get("finder", "max_holdings_finder_per_etf", default=40) or 40
+        )
+        material = [h for h in identified if h.pct >= materiality]
+        small = [h for h in identified if h.pct < materiality]
+        fund_types = self.policy.fund_quote_types
+        tally = _HoldingTally()
+        for i, holding in enumerate(material):
             assert holding.ticker is not None
-            child_verdict = await self._screen_holding(holding.ticker, ctx.depth + 1)
-            if child_verdict != "HALAL":
-                failed.append(holding.ticker)
-        metrics["failed_holdings"] = failed[:20]
-        metrics["failed_count"] = len(failed)
-        if failed:
+            child = await self._screen_holding(
+                holding.ticker,
+                ctx.depth + 1,
+                HoldingScreenMode.FULL,
+                i < cap,
+            )
+            score_holding(holding, child, HoldingScreenMode.FULL, fund_types, tally)
+        for holding in small:
+            assert holding.ticker is not None
+            child = await self._screen_holding(
+                holding.ticker,
+                ctx.depth + 1,
+                HoldingScreenMode.ACTIVITY_ONLY,
+                False,
+            )
+            score_holding(
+                holding,
+                child,
+                HoldingScreenMode.ACTIVITY_ONLY,
+                fund_types,
+                tally,
+            )
+
+        unidentified_weight = screenable_weight - identified_weight
+        unidentified_is_uncovered = self.policy.get(
+            "etf", "unidentified_is_uncovered", default=True
+        )
+        if unidentified_is_uncovered is None:
+            unidentified_is_uncovered = True
+        uncovered_weight = tally.unresolved_ratio_weight + tally.junk_weight
+        if unidentified_is_uncovered:
+            uncovered_weight += unidentified_weight
+        coverage = (
+            (identified_weight - tally.unresolved_ratio_weight - tally.junk_weight)
+            / screenable_weight
+            if screenable_weight > 0
+            else 0.0
+        )
+        metrics["coverage"] = coverage
+        metrics["activity_failed_holdings"] = tally.activity_failed[:20]
+        metrics["nested_fund_failed"] = tally.nested_fund_failed[:20]
+        metrics["ratio_fail_weight"] = tally.ratio_fail_weight
+        metrics["unresolved_ratio_weight"] = tally.unresolved_ratio_weight
+        metrics["uncovered_weight"] = uncovered_weight
+        metrics["junk_ids"] = tally.junk_ids[:20]
+
+        if coverage < floor:
             return PluginVote(
                 plugin=self.name,
                 vote=Vote.FAIL,
-                reason=f"{len(failed)} holding(s) not HALAL",
+                reason="incomplete N-PORT holdings",
+                metrics=metrics,
+            )
+
+        weight_by_ticker = {h.ticker: h.pct for h in identified if h.ticker}
+
+        def _at_or_above_epsilon(names: list[str]) -> bool:
+            return any(weight_by_ticker.get(name, 0.0) >= epsilon for name in names)
+
+        if _at_or_above_epsilon(tally.nested_fund_failed):
+            return PluginVote(
+                plugin=self.name,
+                vote=Vote.FAIL,
+                reason="nested fund holding(s)",
+                metrics=metrics,
+            )
+        if _at_or_above_epsilon(tally.activity_failed):
+            return PluginVote(
+                plugin=self.name,
+                vote=Vote.FAIL,
+                reason="activity-fail holding(s)",
+                metrics=metrics,
+            )
+        if tally.ratio_fail_weight >= ratio_fail_cap:
+            return PluginVote(
+                plugin=self.name,
+                vote=Vote.FAIL,
+                reason="ratio-fail weight at or above cap",
                 metrics=metrics,
             )
         return PluginVote(
             plugin=self.name,
             vote=Vote.PASS,
-            reason="holdings covered and all identified names HALAL",
+            reason="holdings covered",
             metrics=metrics,
         )
 

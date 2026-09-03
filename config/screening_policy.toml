@@ -207,6 +207,10 @@ coverage_floor = 0.95
 lookthrough_max_depth = 1
 fund_quote_types = ["ETF", "MUTUALFUND"]
 skip_asset_categories = ["STIV"]
+activity_fail_epsilon_weight = 0.0
+ratio_fail_weight_cap = 0.05
+ratio_materiality_weight = 0.005
+unidentified_is_uncovered = true
 
 [halalwallet]
 dataset_url = "https://www.halalwallet.us/api/data/halal-stock-screening-data-us.json"

@@ -83,12 +83,10 @@ def _vote_cell(result: ScreenResult, plugin_names: list[str]) -> str:
             coverage = metrics.get("coverage")
             if isinstance(coverage, (int, float)):
                 bits.append(f"coverage={coverage:.3f}")
-            failed = metrics.get("failed_holdings")
+            failed = list(metrics.get("activity_failed_holdings") or [])
+            failed.extend(metrics.get("nested_fund_failed") or [])
             if failed:
                 bits.append("failed=" + ",".join(str(x) for x in failed))
-            failed_count = metrics.get("failed_count")
-            if failed_count is not None:
-                bits.append(f"failed_count={failed_count}")
             extra = f" [{'; '.join(bits)}]" if bits else ""
         elif name == "Activity":
             sector = metrics.get("sector")
@@ -148,8 +146,9 @@ def _failed_holdings(result: ScreenResult) -> list[str]:
     vote = result.votes.get("NportHoldings")
     if vote is None or not vote.metrics:
         return []
-    raw = vote.metrics.get("failed_holdings") or []
-    return [str(t).upper() for t in raw]
+    names = list(vote.metrics.get("activity_failed_holdings") or [])
+    names.extend(vote.metrics.get("nested_fund_failed") or [])
+    return [str(t).upper() for t in names]
 
 
 def _pad(rows: list[list[str]]) -> str:
@@ -242,9 +241,7 @@ def _print_groups(rows: list[dict[str, Any]]) -> None:
         if r["engine_verdict"] == HALAL and r["bar"] in (NOT_HALAL, "DOUBTFUL")
     ]
     false_not_halal = [
-        r
-        for r in comparable
-        if r["engine_verdict"] == NOT_HALAL and r["bar"] == HALAL
+        r for r in comparable if r["engine_verdict"] == NOT_HALAL and r["bar"] == HALAL
     ]
     mz_conflict = [r for r in comparable if r["conflict"]]
     seo = [r for r in comparable if _seo_suspect(r)]
@@ -362,7 +359,9 @@ async def _run(
         extras: list[str] = []
         already = {r["ticker"] for r in rows}
         if include_extras:
-            extras = [t for t in extra_from if t not in fixture_set and t not in already]
+            extras = [
+                t for t in extra_from if t not in fixture_set and t not in already
+            ]
             extras.sort()
         consecutive_errors = 0
         for ticker in extras:
@@ -422,21 +421,11 @@ async def _run(
 
     print()
     print("FIXTURE COMPARISON")
-    print(
-        _pad(
-            [headers]
-            + [_row_line(r) for r in fixture_rows]
-        )
-    )
+    print(_pad([headers] + [_row_line(r) for r in fixture_rows]))
     if extra_rows:
         print()
         print("EXTRA FAILED HOLDINGS (from N-PORT votes; cheap cap = first 20/ETF)")
-        print(
-            _pad(
-                [headers]
-                + [_row_line(r) for r in extra_rows]
-            )
-        )
+        print(_pad([headers] + [_row_line(r) for r in extra_rows]))
         print()
         print("Extra holding sources:")
         for r in extra_rows:

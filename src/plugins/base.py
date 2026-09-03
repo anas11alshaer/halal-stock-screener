@@ -29,6 +29,11 @@ class DenominatorSource(str, Enum):
     SPOT = "spot"
 
 
+class HoldingScreenMode(str, Enum):
+    FULL = "full"
+    ACTIVITY_ONLY = "activity_only"
+
+
 @dataclass
 class Segment:
     name: str
