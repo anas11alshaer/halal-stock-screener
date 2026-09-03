@@ -24,11 +24,11 @@ class ActivityPlugin(Plugin):
         industry = (ctx.fundamentals.industry or "").strip()
         metrics = {"sector": sector or None, "industry": industry or None}
 
-        if not sector and not industry:
+        if not sector or not industry:
             return PluginVote(
                 plugin=self.name,
                 vote=Vote.ABSTAIN,
-                reason="missing sector and industry",
+                reason="missing sector or industry",
                 metrics=metrics,
             )
 

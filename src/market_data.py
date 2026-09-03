@@ -141,18 +141,20 @@ class YFinanceMarketData(MarketData):
         ratios = self._policy.section("ratios")
         if fundamentals.interest_income is None:
             fundamentals.interest_income = _latest_fact(
-                facts, list(ratios.get("companyfacts_interest_income_tags") or [])
+                facts,
+                list(ratios.get("companyfacts_interest_income_tags") or []),
+                skip_net=True,
             )
         if fundamentals.revenue is None:
             fundamentals.revenue = _latest_fact(
                 facts, list(ratios.get("companyfacts_revenue_tags") or [])
             )
         if fundamentals.total_debt is None:
-            fundamentals.total_debt = _latest_fact(
+            fundamentals.total_debt = _sum_facts_same_period(
                 facts, list(ratios.get("companyfacts_debt_tags") or [])
             )
         if fundamentals.cash_and_securities is None:
-            fundamentals.cash_and_securities = _latest_fact(
+            fundamentals.cash_and_securities = _sum_facts_same_period(
                 facts, list(ratios.get("companyfacts_cash_tags") or [])
             )
 
@@ -183,13 +185,57 @@ class YFinanceMarketData(MarketData):
         return mapping
 
 
-def _latest_fact(gaap: dict[str, Any], tags: list[str]) -> float | None:
+def _usd_unit_points(units: dict[str, Any]) -> list[dict[str, Any]]:
+    # USD/shares is a per-share figure; treating it as a dollar total understates
+    # (or overstates) ratios.
+    points = units.get("USD") or []
+    return [p for p in points if isinstance(p, dict) and p.get("val") is not None]
+
+
+def _is_net_interest_tag(tag: str) -> bool:
+    return "Expense" in tag or tag.endswith("Net")
+
+
+def _latest_fact(
+    gaap: dict[str, Any], tags: list[str], *, skip_net: bool = False
+) -> float | None:
     for tag in tags:
-        units = (gaap.get(tag) or {}).get("units") or {}
-        points = units.get("USD") or units.get("USD/shares") or []
-        dated = [p for p in points if isinstance(p, dict) and p.get("val") is not None]
+        if skip_net and _is_net_interest_tag(tag):
+            continue
+        dated = _usd_unit_points((gaap.get(tag) or {}).get("units") or {})
         if not dated:
             continue
         dated.sort(key=lambda p: str(p.get("end") or p.get("filed") or ""))
         return _to_float(dated[-1].get("val"))
     return None
+
+
+def _sum_facts_same_period(gaap: dict[str, Any], tags: list[str]) -> float | None:
+    """Sum component tags at the latest shared `end` date (first-hit understates)."""
+    tagged: list[list[dict[str, Any]]] = []
+    all_points: list[dict[str, Any]] = []
+    for tag in tags:
+        points = _usd_unit_points((gaap.get(tag) or {}).get("units") or {})
+        if not points:
+            continue
+        tagged.append(points)
+        all_points.extend(points)
+    if not all_points:
+        return None
+    latest = max(str(p.get("end") or p.get("filed") or "") for p in all_points)
+    if not latest:
+        return None
+    total = 0.0
+    found = False
+    for points in tagged:
+        at_end = [
+            p for p in points if str(p.get("end") or p.get("filed") or "") == latest
+        ]
+        if not at_end:
+            continue
+        at_end.sort(key=lambda p: str(p.get("end") or p.get("filed") or ""))
+        value = _to_float(at_end[-1].get("val"))
+        if value is not None:
+            total += value
+            found = True
+    return total if found else None

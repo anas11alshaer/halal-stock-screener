@@ -85,12 +85,21 @@ class NportHoldingsPlugin(Plugin):
             for c in (self.policy.get("etf", "skip_asset_categories", default=[]) or [])
         }
 
-        def _covered(holding: Holding) -> bool:
+        def _unidentified_skip(holding: Holding) -> bool:
             if holding.ticker:
-                return True
+                return False
             return (holding.asset_cat or "").upper() in skip
 
-        coverage = sum(h.pct for h in report.holdings if _covered(h))
+        unidentified_skip = [h for h in report.holdings if _unidentified_skip(h)]
+        screenable = [h for h in report.holdings if not _unidentified_skip(h)]
+        identified = [h for h in screenable if h.ticker]
+        skip_weight = sum(h.pct for h in unidentified_skip)
+        screenable_weight = sum(h.pct for h in screenable)
+        identified_weight = sum(h.pct for h in identified)
+        # Skip (cash/T-bills) must not pad the floor; ratio is identified / non-skip.
+        coverage = (
+            identified_weight / screenable_weight if screenable_weight > 0 else 0.0
+        )
         raw_floor = self.policy.get("etf", "coverage_floor")
         if raw_floor is None:
             return PluginVote(
@@ -99,18 +108,25 @@ class NportHoldingsPlugin(Plugin):
                 reason="incomplete N-PORT holdings",
                 metrics={
                     "coverage": coverage,
+                    "skip_weight": skip_weight,
                     "missing_policy_key": "etf.coverage_floor",
                 },
             )
         floor = float(raw_floor)
-        identified = [h for h in report.holdings if h.ticker]
         metrics: dict[str, Any] = {
             "coverage": coverage,
             "coverage_floor": floor,
+            "skip_weight": skip_weight,
             "holding_count": len(report.holdings),
             "identified_count": len(identified),
         }
-        if coverage < floor:
+        slack = 1.0 - floor
+        if (
+            skip_weight > slack
+            or screenable_weight <= 0
+            or not identified
+            or coverage < floor
+        ):
             return PluginVote(
                 plugin=self.name,
                 vote=Vote.FAIL,
@@ -275,7 +291,6 @@ class SecNportClient(NportClient):
         self._policy = policy
         self._http = http
         self._mf_index: dict[str, dict[str, Any]] | None = None
-        self._issuer_ciks: dict[str, str] | None = None
         self._sleep = sleep or asyncio.sleep
         if cache_path is None:
             from config import DATA_DIR
@@ -306,17 +321,13 @@ class SecNportClient(NportClient):
     async def _lookup_fund(self, ticker: str) -> dict[str, Any] | None:
         index = await self._mf_tickers()
         row = index.get(ticker)
-        if row:
-            return row
-        cik = await self._issuer_cik(ticker)
-        if cik:
-            logger.info(
-                "N-PORT: %s missing from MF ticker map; using issuer CIK %s",
-                ticker,
-                cik,
-            )
-            return {"cik": cik, "seriesId": ""}
-        return None
+        if not row:
+            return None
+        series_id = str(row.get("seriesId") or row.get("series_id") or "").strip()
+        if not series_id:
+            logger.warning("N-PORT: %s has no series id in MF ticker map", ticker)
+            return None
+        return row
 
     async def _mf_tickers(self) -> dict[str, dict[str, Any]]:
         if self._mf_index is not None:
@@ -352,24 +363,6 @@ class SecNportClient(NportClient):
         self._mf_index = indexed
         return indexed
 
-    async def _issuer_cik(self, ticker: str) -> str | None:
-        if self._issuer_ciks is None:
-            url = str(self._sources()["sec_company_tickers_url"])
-            response = await self._http.get(url, headers=self._sec_headers())
-            response.raise_for_status()
-            payload = response.json()
-            mapping: dict[str, str] = {}
-            rows = payload.values() if isinstance(payload, dict) else payload
-            for rec in rows:
-                if not isinstance(rec, dict):
-                    continue
-                t = str(rec.get("ticker") or "").upper().strip()
-                cik = rec.get("cik_str") or rec.get("cik")
-                if t and cik is not None:
-                    mapping[t] = str(cik)
-            self._issuer_ciks = mapping
-        return self._issuer_ciks.get(ticker.upper())
-
     def _sec_headers(self) -> dict[str, str]:
         return self._policy.edgar_headers()
 
@@ -397,51 +390,74 @@ class SecNportClient(NportClient):
                     report = parse_nport_xml(doc.text)
                 except ET.ParseError:
                     continue
-                if series_id and report.series_id and report.series_id != series_id:
+                if series_id and report.series_id != series_id:
                     continue
                 if report.holdings:
                     return report
         return None
 
     async def _fill_tickers_from_cusip(self, report: NportReport) -> None:
-        """NPORT-P often has CUSIP and empty ticker; map via free OpenFIGI."""
-        needed: list[str] = []
+        """NPORT-P often has CUSIP and empty ticker; live path is cache-only."""
         for holding in report.holdings:
             if holding.ticker or not holding.cusip:
                 continue
             cached = self._cusip_tickers.get(holding.cusip)
             if cached:
                 holding.ticker = cached
-            elif holding.cusip not in needed:
-                needed.append(holding.cusip)
+
+    async def warm_cusip_cache(self, cusips: list[str]) -> dict[str, str]:
+        """Map CUSIPs via OpenFIGI offline. Not called from holdings()."""
+        needed: list[str] = []
+        seen: set[str] = set()
+        for cusip in cusips:
+            if not cusip or cusip in self._cusip_tickers or cusip in seen:
+                continue
+            seen.add(cusip)
+            needed.append(cusip)
         if not needed:
-            return
+            return {}
         mapped = await self._openfigi_cusips(needed)
         self._cusip_tickers.update(mapped)
         _save_cusip_cache(self._cache_path, self._cusip_tickers)
-        for holding in report.holdings:
-            if holding.ticker or not holding.cusip:
+        return mapped
+
+    def _openfigi_wait(self, response: httpx.Response, default: float) -> float:
+        for header in ("Retry-After", "ratelimit-reset"):
+            raw = response.headers.get(header)
+            if not raw:
                 continue
-            ticker = mapped.get(holding.cusip) or self._cusip_tickers.get(holding.cusip)
-            if ticker:
-                holding.ticker = ticker
+            try:
+                return float(raw)
+            except ValueError:
+                continue
+        return default
 
     async def _openfigi_cusips(self, cusips: list[str]) -> dict[str, str]:
         url = str(self._sources().get("openfigi_mapping_url") or "")
         if not url:
             return {}
+        from config import OPENFIGI_API_KEY
+
+        api_key = (OPENFIGI_API_KEY or "").strip()
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["X-OPENFIGI-APIKEY"] = api_key
         mapped: dict[str, str] = {}
-        batch_size = 10
+        batch_size = 100 if api_key else 10
         wait = float(self._sources().get("openfigi_retry_seconds") or 65)
+        attempts = 4
+        # Anonymous mapping is 25 req/min; pace so the warmer does not 429 immediately.
+        inter_batch = 0.0 if api_key else 60.0 / 25.0
         for i in range(0, len(cusips), batch_size):
             chunk = cusips[i : i + batch_size]
             payload = [{"idType": "ID_CUSIP", "idValue": c} for c in chunk]
             rows: Any = None
-            for attempt in range(4):
+            response: httpx.Response | None = None
+            for attempt in range(attempts):
                 try:
                     response = await self._http.post(
                         url,
-                        headers={"Content-Type": "application/json"},
+                        headers=headers,
                         json=payload,
                     )
                 except Exception as exc:
@@ -453,7 +469,8 @@ class SecNportClient(NportClient):
                         wait,
                         attempt + 1,
                     )
-                    await self._sleep(wait)
+                    if attempt + 1 < attempts:
+                        await self._sleep(self._openfigi_wait(response, wait))
                     continue
                 if response.status_code >= 400:
                     logger.warning("OpenFIGI HTTP %s", response.status_code)
@@ -463,12 +480,18 @@ class SecNportClient(NportClient):
                 except ValueError:
                     rows = None
                 break
-            if not isinstance(rows, list):
-                continue
-            for cusip, row in zip(chunk, rows, strict=False):
-                ticker = _openfigi_us_ticker(row)
-                if ticker:
-                    mapped[cusip] = ticker
+            if isinstance(rows, list):
+                for cusip, row in zip(chunk, rows, strict=False):
+                    ticker = _openfigi_us_ticker(row)
+                    if ticker:
+                        mapped[cusip] = ticker
+            more = i + batch_size < len(cusips)
+            if more and response is not None and response.status_code < 400:
+                remaining = response.headers.get("ratelimit-remaining")
+                if remaining == "0":
+                    await self._sleep(self._openfigi_wait(response, wait))
+                elif inter_batch:
+                    await self._sleep(inter_batch)
         return mapped
 
     async def _nport_filing_lists(

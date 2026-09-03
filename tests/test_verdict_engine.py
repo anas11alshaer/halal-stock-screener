@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from config import EVAL_FIXTURES_PATH, POLICY_PATH
 from fusion import HALAL, NOT_HALAL, fuse_conjunction, required_plugin_names
-from market_data import YFinanceMarketData
+from market_data import YFinanceMarketData, _latest_fact, _sum_facts_same_period
 from plugins.base import Fundamentals, PluginVote, Vote
 from plugins.nport import (
     Holding,
@@ -285,7 +285,9 @@ async def test_incomplete_nport_holdings_not_halal() -> None:
     result = await engine.screen("SPY")
     assert result.votes["NportHoldings"].vote is Vote.FAIL
     assert "incomplete" in result.votes["NportHoldings"].reason
-    assert result.votes["NportHoldings"].metrics["coverage"] == pytest.approx(0.90)
+    assert result.votes["NportHoldings"].metrics["coverage"] == pytest.approx(
+        0.90 / 0.99
+    )
     assert result.verdict == NOT_HALAL
 
 
@@ -713,6 +715,8 @@ async def test_nport_uses_raw_xml_not_xsl_and_maps_cusip(
     </edgarSubmission>
     """
     requested: list[str] = []
+    cache_path = tmp_path / "cusip.json"
+    cache_path.write_text('{"037833100": "AAPL"}', encoding="utf-8")
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -722,10 +726,7 @@ async def test_nport_uses_raw_xml_not_xsl_and_maps_cusip(
         if "submissions" in url:
             return httpx.Response(200, json=submissions)
         if "openfigi.com" in url:
-            return httpx.Response(
-                200,
-                json=[{"data": [{"ticker": "AAPL", "exchCode": "US"}]}],
-            )
+            return httpx.Response(500, text="OpenFIGI must not run on holdings()")
         if url.endswith("/primary_doc.xml") and "xslForm" not in url:
             return httpx.Response(200, text=xml_text)
         if "xslForm" in url:
@@ -733,46 +734,24 @@ async def test_nport_uses_raw_xml_not_xsl_and_maps_cusip(
         return httpx.Response(404)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        report = await SecNportClient(
-            policy, http, cache_path=tmp_path / "cusip.json"
-        ).holdings("QQQ")
+        report = await SecNportClient(policy, http, cache_path=cache_path).holdings(
+            "QQQ"
+        )
     assert report is not None
     assert report.holdings[0].ticker == "AAPL"
     assert any("xslForm" in url for url in requested) is False
     assert any(url.endswith("/primary_doc.xml") for url in requested)
+    assert all("openfigi.com" not in url for url in requested)
 
 
 @pytest.mark.asyncio
-async def test_nport_openfigi_retries_after_429(
+async def test_nport_openfigi_warm_retries_after_429(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    monkeypatch.setattr("config.OPENFIGI_API_KEY", "")
     policy = load_policy(POLICY_PATH)
     policy.raw.setdefault("sources", {})["openfigi_retry_seconds"] = 1
-    mf = {
-        "fields": ["cik", "seriesId", "classId", "symbol"],
-        "data": [[99, "S1", "C1", "QQQ"]],
-    }
-    submissions = {
-        "filings": {
-            "recent": {
-                "form": ["NPORT-P"],
-                "accessionNumber": ["000-1"],
-                "primaryDocument": ["primary_doc.xml"],
-            }
-        }
-    }
-    xml_text = """<?xml version="1.0"?>
-    <edgarSubmission>
-      <genInfo><seriesId>S1</seriesId></genInfo>
-      <invstOrSec>
-        <name>APPLE INC</name>
-        <cusip>037833100</cusip>
-        <pctVal>100</pctVal>
-        <assetCat>EC</assetCat>
-      </invstOrSec>
-    </edgarSubmission>
-    """
     hits = {"openfigi": 0}
     waits: list[float] = []
 
@@ -780,12 +759,7 @@ async def test_nport_openfigi_retries_after_429(
         waits.append(seconds)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        url = str(request.url)
-        if url.endswith("company_tickers_mf.json"):
-            return httpx.Response(200, json=mf)
-        if "submissions" in url:
-            return httpx.Response(200, json=submissions)
-        if "openfigi.com" in url:
+        if "openfigi.com" in str(request.url):
             hits["openfigi"] += 1
             if hits["openfigi"] == 1:
                 return httpx.Response(429, text="rate limited")
@@ -793,21 +767,20 @@ async def test_nport_openfigi_retries_after_429(
                 200,
                 json=[{"data": [{"ticker": "AAPL", "exchCode": "US"}]}],
             )
-        if url.endswith("primary_doc.xml"):
-            return httpx.Response(200, text=xml_text)
         return httpx.Response(404)
 
+    cache_path = tmp_path / "cusip.json"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        report = await SecNportClient(
+        mapped = await SecNportClient(
             policy,
             http,
-            cache_path=tmp_path / "cusip.json",
+            cache_path=cache_path,
             sleep=fake_sleep,
-        ).holdings("QQQ")
+        ).warm_cusip_cache(["037833100"])
     assert waits == [1]
     assert hits["openfigi"] == 2
-    assert report is not None
-    assert report.holdings[0].ticker == "AAPL"
+    assert mapped["037833100"] == "AAPL"
+    assert '"037833100"' in cache_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -843,6 +816,286 @@ async def test_nport_no_matching_series_returns_none(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         assert await SecNportClient(policy, http).holdings("SPY") is None
+
+
+@pytest.mark.asyncio
+async def test_nport_all_skip_category_is_not_halal() -> None:
+    report = NportReport(
+        series_id="S000001",
+        holdings=[Holding(name="T-bills", pct=1.0, ticker=None, asset_cat="STIV")],
+    )
+    engine = _engine(
+        {
+            "SPY": Fundamentals(
+                ticker="SPY", quote_type="ETF", sector="Financial Services"
+            ),
+        },
+        nport=FakeNport({"SPY": report}),
+    )
+    result = await engine.screen("SPY")
+    assert result.votes["NportHoldings"].vote is Vote.FAIL
+    assert "incomplete" in result.votes["NportHoldings"].reason
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_nport_skip_cannot_pad_coverage_floor() -> None:
+    report = NportReport(
+        series_id="S000001",
+        holdings=[
+            Holding(name="T-bills", pct=0.90, ticker=None, asset_cat="STIV"),
+            Holding(name="Apple", pct=0.05, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Unknown", pct=0.05, ticker=None, asset_cat="EC"),
+        ],
+    )
+    engine = _engine(
+        {
+            "SPY": Fundamentals(
+                ticker="SPY", quote_type="ETF", sector="Financial Services"
+            ),
+            "AAPL": _ok_equity(),
+        },
+        nport=FakeNport({"SPY": report}),
+    )
+    result = await engine.screen("SPY")
+    assert result.votes["NportHoldings"].vote is Vote.FAIL
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_nport_skip_weight_above_slack_is_not_halal() -> None:
+    report = NportReport(
+        series_id="S000001",
+        holdings=[
+            Holding(name="T-bills", pct=0.10, ticker=None, asset_cat="STIV"),
+            Holding(name="Apple", pct=0.90, ticker="AAPL", asset_cat="EC"),
+        ],
+    )
+    engine = _engine(
+        {
+            "SPY": Fundamentals(
+                ticker="SPY", quote_type="ETF", sector="Financial Services"
+            ),
+            "AAPL": _ok_equity(),
+        },
+        nport=FakeNport({"SPY": report}),
+    )
+    result = await engine.screen("SPY")
+    assert result.votes["NportHoldings"].vote is Vote.FAIL
+    assert "incomplete" in result.votes["NportHoldings"].reason
+    assert result.verdict == NOT_HALAL
+
+
+@pytest.mark.asyncio
+async def test_activity_missing_industry_is_not_halal() -> None:
+    engine = _engine(
+        {
+            "MO": _ok_equity(
+                ticker="MO",
+                sector="Consumer Defensive",
+                industry=None,
+            )
+        }
+    )
+    result = await engine.screen("MO")
+    assert result.votes["Activity"].vote is Vote.ABSTAIN
+    assert "missing" in result.votes["Activity"].reason
+    assert result.verdict == NOT_HALAL
+
+
+def test_latest_fact_ignores_usd_shares_and_net_interest() -> None:
+    gaap = {
+        "InterestIncomeExpenseNet": {
+            "units": {"USD": [{"end": "2024-12-31", "val": 50}]}
+        },
+        "InterestIncomeOperating": {
+            "units": {"USD/shares": [{"end": "2024-12-31", "val": 9}]}
+        },
+    }
+    tags = ["InterestIncomeOperating", "InterestIncomeExpenseNet"]
+    assert _latest_fact(gaap, tags, skip_net=True) is None
+
+
+def test_sum_facts_same_period_adds_debt_components() -> None:
+    gaap = {
+        "LongTermDebt": {
+            "units": {
+                "USD": [
+                    {"end": "2024-12-31", "val": 80},
+                    {"end": "2023-12-31", "val": 1},
+                ]
+            }
+        },
+        "DebtCurrent": {"units": {"USD": [{"end": "2024-12-31", "val": 20}]}},
+        "ShortTermBorrowings": {"units": {"USD": [{"end": "2023-12-31", "val": 999}]}},
+    }
+    tags = ["LongTermDebt", "DebtCurrent", "ShortTermBorrowings"]
+    assert _sum_facts_same_period(gaap, tags) == pytest.approx(100)
+
+
+@pytest.mark.asyncio
+async def test_nport_issuer_cik_without_series_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    policy = load_policy(POLICY_PATH)
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requested.append(url)
+        if url.endswith("company_tickers_mf.json"):
+            return httpx.Response(200, json={})
+        if url.endswith("company_tickers.json"):
+            return httpx.Response(
+                200, json={"0": {"ticker": "SPY", "cik_str": 1234567}}
+            )
+        return httpx.Response(500, text="must not fetch filings without a series id")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        report = await SecNportClient(policy, http).holdings("SPY")
+    assert report is None
+    assert any(url.endswith("company_tickers.json") for url in requested) is False
+    assert any("submissions" in url for url in requested) is False
+
+
+@pytest.mark.asyncio
+async def test_nport_skips_filing_with_missing_series_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    policy = load_policy(POLICY_PATH)
+    mf = {"0": {"cik_str": 1, "ticker": "SPY", "seriesId": "S000002"}}
+    submissions = {
+        "filings": {
+            "recent": {
+                "form": ["NPORT-P", "NPORT-P"],
+                "accessionNumber": ["000-0", "000-1"],
+                "primaryDocument": ["doc0.xml", "doc1.xml"],
+            }
+        }
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("company_tickers_mf.json"):
+            return httpx.Response(200, json=mf)
+        if "submissions" in url:
+            return httpx.Response(200, json=submissions)
+        if "doc0.xml" in url:
+            return httpx.Response(
+                200,
+                text=(
+                    '<?xml version="1.0"?><edgarSubmission>'
+                    "<invstOrSec><name>WRONG</name>"
+                    "<identifiers><ticker>BAD</ticker></identifiers>"
+                    "<pctVal>100</pctVal></invstOrSec></edgarSubmission>"
+                ),
+            )
+        if "doc1.xml" in url:
+            return httpx.Response(
+                200,
+                text=(
+                    '<?xml version="1.0"?><edgarSubmission>'
+                    "<seriesId>S000002</seriesId>"
+                    "<invstOrSec><name>APPLE</name>"
+                    "<identifiers><ticker>AAPL</ticker></identifiers>"
+                    "<pctVal>100</pctVal></invstOrSec></edgarSubmission>"
+                ),
+            )
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        report = await SecNportClient(policy, http).holdings("SPY")
+    assert report is not None
+    assert report.series_id == "S000002"
+    assert report.holdings[0].ticker == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_nport_holdings_does_not_call_openfigi_on_cache_miss(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    policy = load_policy(POLICY_PATH)
+    mf = {
+        "fields": ["cik", "seriesId", "classId", "symbol"],
+        "data": [[99, "S1", "C1", "QQQ"]],
+    }
+    submissions = {
+        "filings": {
+            "recent": {
+                "form": ["NPORT-P"],
+                "accessionNumber": ["000-1"],
+                "primaryDocument": ["primary_doc.xml"],
+            }
+        }
+    }
+    xml_text = """<?xml version="1.0"?>
+    <edgarSubmission>
+      <genInfo><seriesId>S1</seriesId></genInfo>
+      <invstOrSec>
+        <name>APPLE INC</name>
+        <cusip>037833100</cusip>
+        <pctVal>100</pctVal>
+        <assetCat>EC</assetCat>
+      </invstOrSec>
+    </edgarSubmission>
+    """
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requested.append(url)
+        if url.endswith("company_tickers_mf.json"):
+            return httpx.Response(200, json=mf)
+        if "submissions" in url:
+            return httpx.Response(200, json=submissions)
+        if "openfigi.com" in url:
+            return httpx.Response(500, text="OpenFIGI must not run on holdings()")
+        if url.endswith("primary_doc.xml"):
+            return httpx.Response(200, text=xml_text)
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        report = await SecNportClient(
+            policy, http, cache_path=tmp_path / "cusip.json"
+        ).holdings("QQQ")
+    assert report is not None
+    assert report.holdings[0].ticker is None
+    assert all("openfigi.com" not in url for url in requested)
+
+
+@pytest.mark.asyncio
+async def test_nport_openfigi_exhausted_429_does_not_sleep_on_last(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    monkeypatch.setattr("config.OPENFIGI_API_KEY", "")
+    policy = load_policy(POLICY_PATH)
+    policy.raw.setdefault("sources", {})["openfigi_retry_seconds"] = 1
+    hits = {"openfigi": 0}
+    waits: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "openfigi.com" in str(request.url):
+            hits["openfigi"] += 1
+            return httpx.Response(429, text="rate limited")
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        mapped = await SecNportClient(
+            policy,
+            http,
+            cache_path=tmp_path / "cusip.json",
+            sleep=fake_sleep,
+        ).warm_cusip_cache(["037833100"])
+    assert mapped == {}
+    assert hits["openfigi"] == 4
+    assert waits == [1, 1, 1]
 
 
 def test_eval_screener_fixture_list_concatenates_stocks_and_etfs() -> None:

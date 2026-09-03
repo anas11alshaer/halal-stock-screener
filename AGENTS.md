@@ -49,5 +49,5 @@ python src/bot.py                        # run bot locally (needs .env)
 - Orchestration: `src/screener.py` → `src/resolver.py` → `src/database.py` (all DB via `database.py`, cache TTL `CACHE_TTL_HOURS`)
 - Config: `src/config.py` only (no `os.environ` in feature code except `bot.py:52` for `PORT`). Secrets in `.env`; non-secrets in `config/app.toml`; Shariah policy in `config/screening_policy.toml`.
 - Data: `data/stock_screener.db` (gitignored, `data/*.db` + `data/oracle_cloud`), `logs/stock_screener.log` (gitignored)
-- Secrets: `.env` (gitignored) — never commit `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `NVIDIA_API_KEY`, or `SEC_CONTACT_EMAIL`; template is `.env.example`
+- Secrets: `.env` (gitignored) — never commit `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `NVIDIA_API_KEY`, `SEC_CONTACT_EMAIL`, or `OPENFIGI_API_KEY`; template is `.env.example`
 - Legacy ignored: `apps/`, `docs/` old vault, `deploy.bat` (to be removed after migration) — do not re-add

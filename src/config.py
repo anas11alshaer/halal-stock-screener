@@ -32,6 +32,7 @@ _SECRET_NAMES = frozenset(
         "GEMINI_API_KEY",
         "NVIDIA_API_KEY",
         "SEC_CONTACT_EMAIL",
+        "OPENFIGI_API_KEY",
     }
 )
 _SECRET_TOML_KEYS = frozenset(name.lower() for name in _SECRET_NAMES)
@@ -92,6 +93,7 @@ TELEGRAM_BOT_TOKEN = _secret("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = _secret("GEMINI_API_KEY")
 NVIDIA_API_KEY = _secret("NVIDIA_API_KEY")
 SEC_CONTACT_EMAIL = _secret("SEC_CONTACT_EMAIL")
+OPENFIGI_API_KEY = _secret("OPENFIGI_API_KEY")
 
 # Non-secrets — config/app.toml, overridable from .env
 CACHE_TTL_HOURS = int(_env_or("CACHE_TTL_HOURS", str(_CACHE.get("ttl_hours", 24))))
