@@ -49,6 +49,7 @@ async def _run(tickers: list[str], policy_path: Path) -> int:
             if report is None or not report.holdings:
                 print(f"{ticker}: no N-PORT report")
                 continue
+            # CUSIP cache is CUSIP→ticker only.
             needed = [h.cusip for h in report.holdings if h.cusip and not h.ticker]
             mapped = await client.warm_cusip_cache(needed)
             print(

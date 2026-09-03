@@ -420,11 +420,30 @@ def _load_cusip_cache(path: Path) -> dict[str, str]:
 
 
 def _save_cusip_cache(path: Path, mapping: dict[str, str]) -> None:
+    # CUSIP cache is CUSIP→ticker only.
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(mapping, indent=0, sort_keys=True), encoding="utf-8")
     except OSError:
         logger.warning("Could not write CUSIP cache %s", path)
+
+
+def _load_ticker_aliases(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid N-PORT ticker alias file {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"N-PORT ticker alias file {path} must be a JSON object")
+    aliases: dict[str, str] = {}
+    for key, value in payload.items():
+        src = str(key).strip().upper()
+        if not src or not isinstance(value, str) or not value.strip():
+            raise ValueError(f"invalid N-PORT ticker alias mapping {key!r}")
+        aliases[src] = value.strip().upper()
+    return aliases
 
 
 def _cik10(cik: Any) -> str:
@@ -445,18 +464,24 @@ class SecNportClient(NportClient):
         http: httpx.AsyncClient,
         *,
         cache_path: Path | None = None,
+        alias_path: Path | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self._policy = policy
         self._http = http
         self._mf_index: dict[str, dict[str, Any]] | None = None
         self._sleep = sleep or asyncio.sleep
-        if cache_path is None:
+        if cache_path is None or alias_path is None:
             from config import DATA_DIR
 
-            cache_path = DATA_DIR / "openfigi_cusip_tickers.json"
+            if cache_path is None:
+                cache_path = DATA_DIR / "openfigi_cusip_tickers.json"
+            if alias_path is None:
+                alias_path = DATA_DIR / "nport_ticker_aliases.json"
         self._cache_path = cache_path
+        self._alias_path = alias_path
         self._cusip_tickers = _load_cusip_cache(cache_path)
+        self._ticker_aliases = _load_ticker_aliases(alias_path)
 
     def _sources(self) -> dict[str, Any]:
         return self._policy.section("sources")
@@ -472,6 +497,7 @@ class SecNportClient(NportClient):
             if report is None or not report.holdings:
                 return None
             await self._fill_tickers_from_cusip(report)
+            self._apply_ticker_aliases(report)
             return report
         except Exception as exc:
             logger.warning("N-PORT fetch failed for %s: %s", ticker, exc)
@@ -563,6 +589,18 @@ class SecNportClient(NportClient):
             cached = self._cusip_tickers.get(holding.cusip)
             if cached:
                 holding.ticker = cached
+
+    def _apply_ticker_aliases(self, report: NportReport) -> None:
+        aliases = self._ticker_aliases
+        if not aliases:
+            return
+        for holding in report.holdings:
+            ticker = holding.ticker
+            if not ticker:
+                continue
+            aliased = aliases.get(ticker.upper())
+            if aliased:
+                holding.ticker = aliased
 
     async def warm_cusip_cache(self, cusips: list[str]) -> dict[str, str]:
         """Map CUSIPs via OpenFIGI offline. Not called from holdings()."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -2519,3 +2520,381 @@ async def test_nport_full_then_activity_only_cache_has_no_ratios() -> None:
     assert small_msft[0][3] is False
     assert "Ratios" not in small_msft[0][4].votes
     assert small_msft[0][4].votes["Activity"].vote is Vote.PASS
+
+
+def _nport_edgar_handler(
+    xml_text: str,
+    *,
+    fund: str = "SPY",
+    series_id: str = "S1",
+    requested: list[str] | None = None,
+):
+    hits = requested if requested is not None else []
+    mf = {
+        "fields": ["cik", "seriesId", "classId", "symbol"],
+        "data": [[99, series_id, "C1", fund]],
+    }
+    submissions = {
+        "filings": {
+            "recent": {
+                "form": ["NPORT-P"],
+                "accessionNumber": ["000-1"],
+                "primaryDocument": ["primary_doc.xml"],
+            }
+        }
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        hits.append(url)
+        if url.endswith("company_tickers_mf.json"):
+            return httpx.Response(200, json=mf)
+        if "submissions" in url:
+            return httpx.Response(200, json=submissions)
+        if "openfigi.com" in url:
+            return httpx.Response(500, text="OpenFIGI must not run on holdings()")
+        if url.endswith("primary_doc.xml"):
+            return httpx.Response(200, text=xml_text)
+        return httpx.Response(404)
+
+    return handler
+
+
+def _nport_holdings_xml(series_id: str, body: str) -> str:
+    return (
+        '<?xml version="1.0"?><edgarSubmission>'
+        f"<genInfo><seriesId>{series_id}</seriesId></genInfo>"
+        f"{body}</edgarSubmission>"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nport_alias_maps_slash_ticker_for_lookthrough(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    policy = load_policy(POLICY_PATH)
+    alias_path = tmp_path / "nport_ticker_aliases.json"
+    alias_path.write_text(json.dumps({"LEN/B": "LEN.B"}), encoding="utf-8")
+    xml_text = _nport_holdings_xml(
+        "S1",
+        "<invstOrSec><name>Apple</name>"
+        "<identifiers><ticker>AAPL</ticker></identifiers>"
+        "<pctVal>94</pctVal><assetCat>EC</assetCat></invstOrSec>"
+        "<invstOrSec><name>Lennar B</name>"
+        "<identifiers><ticker>LEN/B</ticker></identifiers>"
+        "<pctVal>6</pctVal><assetCat>EC</assetCat></invstOrSec>",
+    )
+    requested: list[str] = []
+    spy = _SpyFinder()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _nport_edgar_handler(xml_text, requested=requested)
+        )
+    ) as http:
+        engine = _engine(
+            {
+                "SPY": _etf_profile(),
+                "AAPL": _ok_equity(),
+                "LEN.B": _ok_equity(ticker="LEN.B"),
+            },
+            nport=SecNportClient(
+                policy,
+                http,
+                cache_path=tmp_path / "cusip.json",
+                alias_path=alias_path,
+            ),
+            finder=spy,
+        )
+        calls = await _record_holding_screens(engine)
+        result = await engine.screen("SPY")
+    screened = [ticker for ticker, *_rest in calls]
+    assert "LEN.B" in screened
+    assert "LEN/B" not in screened
+    nport = result.votes["NportHoldings"]
+    metrics = nport.metrics
+    assert "LEN/B" not in metrics["junk_ids"]
+    assert "LEN.B" not in metrics["junk_ids"]
+    assert "LEN/B" not in metrics["activity_failed_holdings"]
+    assert nport.vote is Vote.PASS
+    assert result.verdict == HALAL
+    assert "AAPL" in spy.tickers
+    assert "LEN.B" in spy.tickers
+    assert "LEN/B" not in spy.tickers
+    assert all("openfigi.com" not in url for url in requested)
+
+
+@pytest.mark.asyncio
+async def test_nport_unknown_hongbp_is_uncovered_without_nim() -> None:
+    spy = _SpyFinder()
+    report = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.97, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Honeywell GBP", pct=0.01, ticker="HONGBP", asset_cat="EC"),
+            Holding(name="Cash", pct=0.02, ticker=None, asset_cat="STIV"),
+        ],
+    )
+    engine = _engine(
+        {"SPY": _etf_profile(), "AAPL": _ok_equity()},
+        nport=FakeNport({"SPY": report}),
+        finder=spy,
+    )
+    result = await engine.screen("SPY")
+    metrics = result.votes["NportHoldings"].metrics
+    assert "HONGBP" in metrics["junk_ids"]
+    assert "HONGBP" not in metrics["activity_failed_holdings"]
+    assert "AAPL" in spy.tickers
+    assert "HONGBP" not in spy.tickers
+    assert metrics["uncovered_weight"] == pytest.approx(0.01)
+    assert result.votes["NportHoldings"].vote is Vote.PASS
+    assert result.verdict == HALAL
+
+    six_pct = NportReport(
+        series_id="S1",
+        holdings=[
+            Holding(name="Apple", pct=0.94, ticker="AAPL", asset_cat="EC"),
+            Holding(name="Honeywell GBP", pct=0.06, ticker="HONGBP", asset_cat="EC"),
+        ],
+    )
+    hole_spy = _SpyFinder()
+    hole = await _engine(
+        {"SPY": _etf_profile(), "AAPL": _ok_equity()},
+        nport=FakeNport({"SPY": six_pct}),
+        finder=hole_spy,
+    ).screen("SPY")
+    hm = hole.votes["NportHoldings"].metrics
+    assert hole.votes["NportHoldings"].vote is Vote.FAIL
+    assert "incomplete" in hole.votes["NportHoldings"].reason
+    assert hole.verdict == NOT_HALAL
+    assert "HONGBP" in hm["junk_ids"]
+    assert hm["activity_failed_holdings"] == []
+    assert "AAPL" in hole_spy.tickers
+    assert "HONGBP" not in hole_spy.tickers
+
+
+@pytest.mark.asyncio
+async def test_nport_holdings_aliases_do_not_call_openfigi(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    policy = load_policy(POLICY_PATH)
+    alias_path = tmp_path / "nport_ticker_aliases.json"
+    alias_path.write_text(json.dumps({"LEN/B": "LEN.B"}), encoding="utf-8")
+    xml_text = _nport_holdings_xml(
+        "S1",
+        "<invstOrSec><name>Apple</name>"
+        "<cusip>037833100</cusip>"
+        "<pctVal>50</pctVal><assetCat>EC</assetCat></invstOrSec>"
+        "<invstOrSec><name>Lennar B</name>"
+        "<identifiers><ticker>LEN/B</ticker></identifiers>"
+        "<pctVal>50</pctVal><assetCat>EC</assetCat></invstOrSec>",
+    )
+    requested: list[str] = []
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _nport_edgar_handler(xml_text, requested=requested)
+        )
+    ) as http:
+        report = await SecNportClient(
+            policy,
+            http,
+            cache_path=tmp_path / "cusip.json",
+            alias_path=alias_path,
+        ).holdings("SPY")
+    assert report is not None
+    by_name = {h.name: h.ticker for h in report.holdings}
+    assert by_name["Apple"] is None
+    assert by_name["Lennar B"] == "LEN.B"
+    assert all("openfigi.com" not in url for url in requested)
+
+
+@pytest.mark.asyncio
+async def test_nport_missing_or_empty_alias_file_leaves_slash_ticker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    policy = load_policy(POLICY_PATH)
+    xml_text = _nport_holdings_xml(
+        "S1",
+        "<invstOrSec><name>Lennar B</name>"
+        "<identifiers><ticker>LEN/B</ticker></identifiers>"
+        "<pctVal>100</pctVal><assetCat>EC</assetCat></invstOrSec>",
+    )
+    missing = tmp_path / "missing_aliases.json"
+    empty = tmp_path / "empty_aliases.json"
+    empty.write_text("{}", encoding="utf-8")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_nport_edgar_handler(xml_text))
+    ) as http:
+        missing_report = await SecNportClient(
+            policy,
+            http,
+            cache_path=tmp_path / "cusip.json",
+            alias_path=missing,
+        ).holdings("SPY")
+        empty_report = await SecNportClient(
+            policy,
+            http,
+            cache_path=tmp_path / "cusip-empty.json",
+            alias_path=empty,
+        ).holdings("SPY")
+    assert missing_report is not None
+    assert missing_report.holdings[0].ticker == "LEN/B"
+    assert empty_report is not None
+    assert empty_report.holdings[0].ticker == "LEN/B"
+
+
+@pytest.mark.asyncio
+async def test_nport_corrupt_alias_file_fails_closed(
+    tmp_path: Path,
+) -> None:
+    policy = load_policy(POLICY_PATH)
+    alias_path = tmp_path / "nport_ticker_aliases.json"
+    cache_path = tmp_path / "cusip.json"
+    async with httpx.AsyncClient() as http:
+        alias_path.write_text("{", encoding="utf-8")
+        with pytest.raises(ValueError, match="alias"):
+            SecNportClient(policy, http, cache_path=cache_path, alias_path=alias_path)
+        alias_path.write_text("[]", encoding="utf-8")
+        with pytest.raises(ValueError, match="alias"):
+            SecNportClient(policy, http, cache_path=cache_path, alias_path=alias_path)
+        alias_path.write_text('{"LEN/B": 1}', encoding="utf-8")
+        with pytest.raises(ValueError, match="alias"):
+            SecNportClient(policy, http, cache_path=cache_path, alias_path=alias_path)
+
+
+@pytest.mark.asyncio
+async def test_nport_alias_applies_after_cusip_fill(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    policy = load_policy(POLICY_PATH)
+    cache_path = tmp_path / "cusip.json"
+    cache_path.write_text(json.dumps({"037833100": "LEN/B"}), encoding="utf-8")
+    alias_path = tmp_path / "nport_ticker_aliases.json"
+    alias_path.write_text(json.dumps({"LEN/B": "LEN.B"}), encoding="utf-8")
+    xml_text = _nport_holdings_xml(
+        "S1",
+        "<invstOrSec><name>Lennar B</name>"
+        "<cusip>037833100</cusip>"
+        "<pctVal>100</pctVal><assetCat>EC</assetCat></invstOrSec>",
+    )
+    requested: list[str] = []
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _nport_edgar_handler(xml_text, requested=requested)
+        )
+    ) as http:
+        report = await SecNportClient(
+            policy,
+            http,
+            cache_path=cache_path,
+            alias_path=alias_path,
+        ).holdings("SPY")
+    assert report is not None
+    assert report.holdings[0].ticker == "LEN.B"
+    assert all("openfigi.com" not in url for url in requested)
+
+
+@pytest.mark.asyncio
+async def test_nport_cusip_cache_alias_keys_are_not_applied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    policy = load_policy(POLICY_PATH)
+    cache_path = tmp_path / "cusip.json"
+    cache_path.write_text(json.dumps({"LEN/B": "LEN.B"}), encoding="utf-8")
+    xml_text = _nport_holdings_xml(
+        "S1",
+        "<invstOrSec><name>Lennar B</name>"
+        "<identifiers><ticker>LEN/B</ticker></identifiers>"
+        "<pctVal>100</pctVal><assetCat>EC</assetCat></invstOrSec>",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_nport_edgar_handler(xml_text))
+    ) as http:
+        report = await SecNportClient(
+            policy,
+            http,
+            cache_path=cache_path,
+            alias_path=tmp_path / "missing_aliases.json",
+        ).holdings("SPY")
+    assert report is not None
+    assert report.holdings[0].ticker == "LEN/B"
+
+
+@pytest.mark.asyncio
+async def test_warm_cusip_cache_does_not_write_alias_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("config.SEC_CONTACT_EMAIL", "nport-tests@example.com")
+    monkeypatch.setattr("config.OPENFIGI_API_KEY", "test-key")
+    policy = load_policy(POLICY_PATH)
+    alias_path = tmp_path / "nport_ticker_aliases.json"
+    alias_path.write_text(json.dumps({"LEN/B": "LEN.B"}), encoding="utf-8")
+    cache_path = tmp_path / "cusip.json"
+    xml_text = _nport_holdings_xml(
+        "S1",
+        "<invstOrSec><name>Lennar B</name>"
+        "<identifiers><ticker>LEN/B</ticker></identifiers>"
+        "<cusip>526057302</cusip>"
+        "<pctVal>50</pctVal><assetCat>EC</assetCat></invstOrSec>"
+        "<invstOrSec><name>Apple</name>"
+        "<cusip>037833100</cusip>"
+        "<pctVal>50</pctVal><assetCat>EC</assetCat></invstOrSec>",
+    )
+    requested: list[str] = []
+    mf = {
+        "fields": ["cik", "seriesId", "classId", "symbol"],
+        "data": [[99, "S1", "C1", "SPY"]],
+    }
+    submissions = {
+        "filings": {
+            "recent": {
+                "form": ["NPORT-P"],
+                "accessionNumber": ["000-1"],
+                "primaryDocument": ["primary_doc.xml"],
+            }
+        }
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requested.append(url)
+        if url.endswith("company_tickers_mf.json"):
+            return httpx.Response(200, json=mf)
+        if "submissions" in url:
+            return httpx.Response(200, json=submissions)
+        if "openfigi.com" in url:
+            if request.method != "POST":
+                return httpx.Response(500, text="OpenFIGI GET must not run")
+            return httpx.Response(
+                200,
+                json=[{"data": [{"ticker": "AAPL", "exchCode": "US"}]}],
+            )
+        if url.endswith("primary_doc.xml"):
+            return httpx.Response(200, text=xml_text)
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = SecNportClient(
+            policy,
+            http,
+            cache_path=cache_path,
+            alias_path=alias_path,
+        )
+        report = await client.holdings("SPY")
+        assert report is not None
+        assert all("openfigi.com" not in url for url in requested)
+        by_name = {h.name: h.ticker for h in report.holdings}
+        assert by_name["Lennar B"] == "LEN.B"
+        assert by_name["Apple"] is None
+        needed = [h.cusip for h in report.holdings if h.cusip and not h.ticker]
+        mapped = await client.warm_cusip_cache(needed)
+    assert mapped["037833100"] == "AAPL"
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert "LEN/B" not in payload
+    assert "LEN.B" not in payload
+    assert payload["037833100"] == "AAPL"
+    assert set(payload) == {"037833100"}

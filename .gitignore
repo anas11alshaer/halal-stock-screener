@@ -27,6 +27,7 @@ data/oracle_cloud
 # Musaffa auth session (contains cookies — keep private)
 data/musaffa_session.json
 data/openfigi_cusip_tickers.json
+data/nport_ticker_aliases.json
 
 # Logs
 logs/*.log
