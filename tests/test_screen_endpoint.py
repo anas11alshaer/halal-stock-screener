@@ -8,9 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import config
 import httpx
 
+import config
 from bot import HealthHandler
 from scrapers import AssetType, ComplianceStatus, ResultState, ScreeningResult
 from screener import ScreenResponse
