@@ -6,6 +6,7 @@ Keep user-facing bullets. Internal refactors stay out unless they change how som
 
 ### Added
 
+- Internal `GET /screen?ticker=X` JSON endpoint on the health server for the whale_scout service on the same VM — full verdict (status, evidence, confidence, per-source results) as JSON; optional `SCREEN_API_TOKEN` bearer auth; unknown paths now return 404 (`e80431d`).
 - Configurable screening-provider, Gemini-reviewer, and delivery-channel plugins.
 - Free Daleel stock/ETF provider with SEC/holdings evidence and methodology caveats.
 - Company-name resolution, ETF detection, ambiguous-name handling, and dotted tickers.
