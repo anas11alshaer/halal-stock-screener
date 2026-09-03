@@ -26,7 +26,6 @@ def _screen_response(ticker="EXAMPLE"):
         state=ResultState.SUCCESS,
         is_provisional=False,
         confirmation_count=2,
-        checked_at="2026-09-03T00:00:00+00:00",
     )
     provider_result = ScreeningResult(
         ticker=ticker,
@@ -34,9 +33,32 @@ def _screen_response(ticker="EXAMPLE"):
         source="fakeprovider",
         state=ResultState.SUCCESS,
         evidence="Holdings screened against a certified Shariah benchmark",
+        checked_at="2026-09-03T00:00:00+00:00",
+    )
+    other_provider_result = ScreeningResult(
+        ticker=ticker,
+        status=ComplianceStatus.HALAL,
+        source="otherprovider",
+        state=ResultState.SUCCESS,
+        checked_at="2026-09-01T00:00:00+00:00",
+    )
+    ratelimited_result = ScreeningResult(
+        ticker=ticker,
+        status=ComplianceStatus.ERROR,
+        source="ratelimited",
+        state=ResultState.RATE_LIMITED,
+        checked_at="2026-08-01T00:00:00+00:00",
     )
     return ScreenResponse(
-        [verdict], [False], source_results={ticker: {"fakeprovider": provider_result}}
+        [verdict],
+        [False],
+        source_results={
+            ticker: {
+                "fakeprovider": provider_result,
+                "otherprovider": other_provider_result,
+                "ratelimited": ratelimited_result,
+            }
+        },
     )
 
 
@@ -70,9 +92,13 @@ def test_healthcheck_root_still_returns_ok():
 
 
 def test_screen_returns_json_verdict_with_sources(monkeypatch):
-    monkeypatch.setattr(config, "SCREEN_API_TOKEN", "")
+    monkeypatch.setattr(config, "SCREEN_API_TOKEN", "s3cret")
     with _screen_server(FakeScreener()) as base_url:
-        response = httpx.get(f"{base_url}/screen", params={"ticker": "EXAMPLE"})
+        response = httpx.get(
+            f"{base_url}/screen",
+            params={"ticker": "EXAMPLE"},
+            headers={"Authorization": "Bearer s3cret"},
+        )
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     payload = response.json()
@@ -85,7 +111,7 @@ def test_screen_returns_json_verdict_with_sources(monkeypatch):
     assert payload["confirmation_count"] == 2
     assert payload["confidence"] == "confirmed"
     assert payload["details"] is None
-    assert payload["checked_at"] == "2026-09-03T00:00:00+00:00"
+    assert payload["checked_at"] == "2026-09-01T00:00:00+00:00"
     source = payload["sources"]["fakeprovider"]
     assert source["status"] == "HALAL"
     assert source["state"] == "SUCCESS"
@@ -93,6 +119,8 @@ def test_screen_returns_json_verdict_with_sources(monkeypatch):
     assert source["methodology"] is None
     assert source["url"] is None
     assert source["error_message"] is None
+    assert source["checked_at"] == "2026-09-03T00:00:00+00:00"
+    assert "ratelimited" not in payload["sources"]
 
 
 def test_screen_requires_bearer_token_when_configured(monkeypatch):
@@ -126,19 +154,20 @@ def test_screen_rejects_wrong_token(monkeypatch):
     assert response.status_code == 401
 
 
-def test_screen_open_when_no_token_configured(monkeypatch):
+def test_screen_disabled_when_no_token_configured(monkeypatch):
     monkeypatch.setattr(config, "SCREEN_API_TOKEN", "")
     with _screen_server(FakeScreener()) as base_url:
         response = httpx.get(f"{base_url}/screen", params={"ticker": "EXAMPLE"})
-    assert response.status_code == 200
-    assert response.json()["confidence"] == "confirmed"
+    assert response.status_code == 403
+    assert response.json() == {"error": "screen endpoint disabled; set SCREEN_API_TOKEN"}
 
 
 def test_screen_missing_ticker_returns_400(monkeypatch):
-    monkeypatch.setattr(config, "SCREEN_API_TOKEN", "")
+    monkeypatch.setattr(config, "SCREEN_API_TOKEN", "s3cret")
     with _screen_server(FakeScreener()) as base_url:
-        missing = httpx.get(f"{base_url}/screen")
-        empty = httpx.get(f"{base_url}/screen", params={"ticker": "   "})
+        headers = {"Authorization": "Bearer s3cret"}
+        missing = httpx.get(f"{base_url}/screen", headers=headers)
+        empty = httpx.get(f"{base_url}/screen", params={"ticker": "   "}, headers=headers)
     assert missing.status_code == 400
     assert missing.json() == {"error": "missing ticker query parameter"}
     assert empty.status_code == 400
@@ -152,8 +181,34 @@ def test_unknown_path_returns_404():
 
 
 def test_screen_resolution_error_returns_200_with_error_field(monkeypatch):
-    monkeypatch.setattr(config, "SCREEN_API_TOKEN", "")
+    monkeypatch.setattr(config, "SCREEN_API_TOKEN", "s3cret")
     with _screen_server(FakeScreener(ScreenResponse([], [], error="ambiguous"))) as base_url:
-        response = httpx.get(f"{base_url}/screen", params={"ticker": "EXAMPLE"})
+        response = httpx.get(
+            f"{base_url}/screen",
+            params={"ticker": "EXAMPLE"},
+            headers={"Authorization": "Bearer s3cret"},
+        )
     assert response.status_code == 200
     assert response.json() == {"error": "ambiguous"}
+
+
+def test_screen_checked_at_null_when_no_successful_sources(monkeypatch):
+    monkeypatch.setattr(config, "SCREEN_API_TOKEN", "s3cret")
+    response = _screen_response()
+    response.source_results["EXAMPLE"] = {
+        "failedprovider": ScreeningResult(
+            ticker="EXAMPLE",
+            status=ComplianceStatus.ERROR,
+            source="failedprovider",
+            state=ResultState.PARSE_ERROR,
+            checked_at="2026-08-01T00:00:00+00:00",
+        )
+    }
+    with _screen_server(FakeScreener(response)) as base_url:
+        http_response = httpx.get(
+            f"{base_url}/screen",
+            params={"ticker": "EXAMPLE"},
+            headers={"Authorization": "Bearer s3cret"},
+        )
+    assert http_response.status_code == 200
+    assert http_response.json()["checked_at"] is None

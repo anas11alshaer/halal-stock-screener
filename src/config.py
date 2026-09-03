@@ -23,7 +23,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # Gemini API configuration (single key)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Internal GET /screen endpoint; an empty token disables bearer auth.
+# Bearer token for the internal GET /screen endpoint; the endpoint is disabled when empty.
 SCREEN_API_TOKEN = os.getenv("SCREEN_API_TOKEN", "")
 
 # Cache configuration

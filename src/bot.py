@@ -1,6 +1,7 @@
 """Service entry point: health server plus configured delivery channel."""
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -46,7 +47,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         from scrapers import STATUS_TEXT, ResultState
 
         token = config.SCREEN_API_TOKEN
-        if token and self.headers.get("Authorization") != f"Bearer {token}":
+        if not token:
+            self._respond_json(403, {"error": "screen endpoint disabled; set SCREEN_API_TOKEN"})
+            return
+        if not hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {token}"):
             self._respond_json(401, {"error": "unauthorized"})
             return
         values = params.get("ticker", [])
@@ -70,6 +74,15 @@ class HealthHandler(BaseHTTPRequestHandler):
             confidence = "confirmed"
         else:
             confidence = "unresolved"
+        provider_results = response.source_results.get(result.ticker, {})
+        checked_at = min(
+            (
+                provider_result.checked_at
+                for provider_result in provider_results.values()
+                if provider_result.checked_at and provider_result.state == ResultState.SUCCESS
+            ),
+            default=None,
+        )
         sources = {
             provider_id: {
                 "status": provider_result.status.value if provider_result.status else None,
@@ -78,10 +91,9 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "methodology": provider_result.methodology,
                 "url": provider_result.url,
                 "error_message": provider_result.error_message,
+                "checked_at": provider_result.checked_at,
             }
-            for provider_id, provider_result in response.source_results.get(
-                result.ticker, {}
-            ).items()
+            for provider_id, provider_result in provider_results.items()
             if provider_result.state != ResultState.RATE_LIMITED
         }
         self._respond_json(
@@ -96,7 +108,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "confirmation_count": result.confirmation_count,
                 "confidence": confidence,
                 "details": result.details,
-                "checked_at": result.checked_at,
+                "checked_at": checked_at,
                 "sources": sources,
             },
         )
