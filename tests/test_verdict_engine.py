@@ -17,7 +17,14 @@ from config import EVAL_FIXTURES_PATH, POLICY_PATH
 from data_finder import NoOpFinder
 from fusion import HALAL, NOT_HALAL, fuse_conjunction, required_plugin_names
 from market_data import YFinanceMarketData, _latest_fact, _sum_facts_same_period
-from plugins.base import DenominatorSource, Fundamentals, PluginVote, Vote
+from plugins.base import (
+    DenominatorSource,
+    FactState,
+    Fundamentals,
+    PluginVote,
+    Segment,
+    Vote,
+)
 from plugins.nport import (
     Holding,
     NportClient,
@@ -358,6 +365,278 @@ async def test_missing_receivables_screen_enabled_key_still_applies_ar() -> None
 def test_unquantified_denied_tag_is_doubtful_in_policy() -> None:
     policy = load_policy(POLICY_PATH)
     assert policy.section("activity").get("unquantified_denied_tag") == "doubtful"
+
+
+def _found_seg(
+    name: str,
+    tags: list[str],
+    *,
+    revenue: float | None = None,
+    revenue_pct: float | None = None,
+) -> Segment:
+    return Segment(
+        name=name,
+        revenue=revenue,
+        revenue_pct=revenue_pct,
+        tags=tags,
+        state=FactState.FOUND,
+    )
+
+
+@pytest.mark.asyncio
+async def test_interest_plus_gambling_segment_ratios_fail() -> None:
+    engine = _engine(
+        {
+            "X": _ok_equity(
+                ticker="X",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[
+                    _found_seg(
+                        "Loot boxes",
+                        ["gaming_gambling_mechanics"],
+                        revenue_pct=6.0,
+                    )
+                ],
+            )
+        }
+    )
+    result = await engine.screen("X")
+    ratios = result.votes["Ratios"]
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert ratios.metrics["interest_income_pct"] == pytest.approx(1.0)
+    assert ratios.metrics["interest_income_pct"] < ratios.metrics["income_limit_pct"]
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(7.0)
+    assert (
+        ratios.metrics["impermissible_income_pct"] > ratios.metrics["income_limit_pct"]
+    )
+    assert ratios.vote is Vote.FAIL
+    assert "impermissible-income" in ratios.reason
+
+
+@pytest.mark.asyncio
+async def test_interest_plus_allowed_games_ratios_pass() -> None:
+    engine = _engine(
+        {
+            "MSFT": _ok_equity(
+                ticker="MSFT",
+                sector="Technology",
+                industry="Software - Infrastructure",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[
+                    _found_seg(
+                        "Xbox",
+                        ["gaming_interactive_entertainment"],
+                        revenue_pct=8.0,
+                    )
+                ],
+            )
+        }
+    )
+    result = await engine.screen("MSFT")
+    ratios = result.votes["Ratios"]
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert ratios.metrics["interest_income_pct"] == pytest.approx(1.0)
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(1.0)
+    assert (
+        ratios.metrics["impermissible_income_pct"] < ratios.metrics["income_limit_pct"]
+    )
+    assert ratios.vote is Vote.PASS
+
+
+@pytest.mark.asyncio
+async def test_unquantified_impure_ads_video_ratios_abstain() -> None:
+    engine = _engine(
+        {
+            "GOOGL": _ok_equity(
+                ticker="GOOGL",
+                sector="Communication Services",
+                industry="Internet Content & Information",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[
+                    _found_seg("YouTube ads", ["ads_video"]),
+                ],
+            )
+        }
+    )
+    result = await engine.screen("GOOGL")
+    ratios = result.votes["Ratios"]
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert ratios.metrics["interest_income_pct"] == pytest.approx(1.0)
+    assert ratios.metrics["interest_income_pct"] < ratios.metrics["income_limit_pct"]
+    assert ratios.vote is Vote.ABSTAIN
+    assert "unquantified" in ratios.reason
+    assert "interest-income" not in ratios.reason
+
+
+@pytest.mark.asyncio
+async def test_cited_weapons_under_income_cap_ratios_pass() -> None:
+    engine = _engine(
+        {
+            "CAT": _ok_equity(
+                ticker="CAT",
+                sector="Industrials",
+                industry="Farm & Heavy Construction Machinery",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[_found_seg("Defense parts", ["weapons"], revenue_pct=3.0)],
+            )
+        }
+    )
+    result = await engine.screen("CAT")
+    ratios = result.votes["Ratios"]
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert ratios.metrics["interest_income_pct"] == pytest.approx(1.0)
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(4.0)
+    assert (
+        ratios.metrics["impermissible_income_pct"] < ratios.metrics["income_limit_pct"]
+    )
+    assert ratios.vote is Vote.PASS
+
+
+@pytest.mark.asyncio
+async def test_cited_weapons_over_income_cap_ratios_fail() -> None:
+    engine = _engine(
+        {
+            "CAT": _ok_equity(
+                ticker="CAT",
+                sector="Industrials",
+                industry="Farm & Heavy Construction Machinery",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[_found_seg("Defense parts", ["weapons"], revenue_pct=6.0)],
+            )
+        }
+    )
+    result = await engine.screen("CAT")
+    ratios = result.votes["Ratios"]
+    assert result.votes["Activity"].vote is Vote.PASS
+    assert ratios.metrics["interest_income_pct"] == pytest.approx(1.0)
+    assert ratios.metrics["interest_income_pct"] < ratios.metrics["income_limit_pct"]
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(7.0)
+    assert (
+        ratios.metrics["impermissible_income_pct"] > ratios.metrics["income_limit_pct"]
+    )
+    assert ratios.vote is Vote.FAIL
+
+
+@pytest.mark.asyncio
+async def test_impure_segment_revenue_dollars_count_toward_mix() -> None:
+    engine = _engine(
+        {
+            "X": _ok_equity(
+                ticker="X",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[
+                    _found_seg(
+                        "Loot boxes",
+                        ["gaming_gambling_mechanics"],
+                        revenue=30.0,
+                    )
+                ],
+            )
+        }
+    )
+    result = await engine.screen("X")
+    ratios = result.votes["Ratios"]
+    assert ratios.metrics["interest_income_pct"] == pytest.approx(1.0)
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(7.0)
+    assert ratios.vote is Vote.FAIL
+
+
+@pytest.mark.asyncio
+async def test_core_fail_segment_does_not_change_ratios_mix() -> None:
+    engine = _engine(
+        {
+            "X": _ok_equity(
+                ticker="X",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[
+                    _found_seg(
+                        "Sportsbook",
+                        ["online_gambling_operator"],
+                        revenue_pct=6.0,
+                    )
+                ],
+            )
+        }
+    )
+    result = await engine.screen("X")
+    ratios = result.votes["Ratios"]
+    assert result.votes["Activity"].vote is Vote.FAIL
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(1.0)
+    assert ratios.vote is Vote.PASS
+
+
+@pytest.mark.asyncio
+async def test_quantified_zero_impure_does_not_abstain() -> None:
+    engine = _engine(
+        {
+            "X": _ok_equity(
+                ticker="X",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[_found_seg("Defense parts", ["weapons"], revenue_pct=0.0)],
+            )
+        }
+    )
+    result = await engine.screen("X")
+    ratios = result.votes["Ratios"]
+    assert ratios.vote is Vote.PASS
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_impure_mix_prefers_revenue_pct_over_dollars() -> None:
+    engine = _engine(
+        {
+            "X": _ok_equity(
+                ticker="X",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[
+                    _found_seg(
+                        "Defense parts",
+                        ["weapons"],
+                        revenue=30.0,
+                        revenue_pct=3.0,
+                    )
+                ],
+            )
+        }
+    )
+    result = await engine.screen("X")
+    ratios = result.votes["Ratios"]
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(4.0)
+    assert ratios.vote is Vote.PASS
+
+
+@pytest.mark.asyncio
+async def test_impure_segment_counted_once_not_per_tag() -> None:
+    engine = _engine(
+        {
+            "X": _ok_equity(
+                ticker="X",
+                interest_income=5.0,
+                revenue=500.0,
+                segments=[
+                    _found_seg(
+                        "Dual",
+                        ["weapons", "pork"],
+                        revenue_pct=3.0,
+                    )
+                ],
+            )
+        }
+    )
+    result = await engine.screen("X")
+    ratios = result.votes["Ratios"]
+    assert ratios.metrics["impermissible_income_pct"] == pytest.approx(4.0)
+    assert ratios.vote is Vote.PASS
 
 
 @pytest.mark.asyncio

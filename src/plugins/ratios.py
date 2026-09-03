@@ -8,6 +8,7 @@ from plugins.base import (
     Plugin,
     PluginVote,
     ScreenContext,
+    Segment,
     Vote,
     is_fund,
 )
@@ -33,6 +34,30 @@ def _market_cap_denominator(f: Fundamentals, section: dict) -> float | None:
     if spot_ok:
         return f.market_cap
     return None
+
+
+def _tag_actions(section: dict) -> dict[str, str]:
+    return {
+        str(spec["id"]): str(spec.get("action") or "").casefold()
+        for spec in (section.get("segments") or [])
+        if isinstance(spec, dict) and spec.get("id")
+    }
+
+
+def _impure_segment_pct(
+    segments: list[Segment] | None, revenue: float, actions: dict[str, str]
+) -> float | None:
+    extra = 0.0
+    for seg in segments or []:
+        if not any(actions.get(tag) == "impure" for tag in (seg.tags or [])):
+            continue
+        if seg.revenue is None and seg.revenue_pct is None:
+            return None
+        if seg.revenue_pct is not None:
+            extra += float(seg.revenue_pct)
+        elif seg.revenue is not None:
+            extra += (float(seg.revenue) / revenue) * 100.0
+    return extra
 
 
 class RatiosPlugin(Plugin):
@@ -120,6 +145,19 @@ class RatiosPlugin(Plugin):
                 metrics=metrics,
             )
 
+        impure_extra = _impure_segment_pct(
+            f.segments, f.revenue, _tag_actions(self.policy.section("activity"))
+        )
+        if impure_extra is None:
+            return PluginVote(
+                plugin=self.name,
+                vote=Vote.ABSTAIN,
+                reason="unquantified impure segment",
+                metrics=metrics,
+            )
+        mix_pct = inc_pct + impure_extra
+        metrics["impermissible_income_pct"] = mix_pct
+
         failures: list[str] = []
         if debt_pct >= debt_lim - margin:
             failures.append("debt")
@@ -129,8 +167,8 @@ class RatiosPlugin(Plugin):
             and cash_pct > cash_lim - margin
         ):
             failures.append("cash")
-        if inc_pct > inc_lim - margin:
-            failures.append("interest-income")
+        if mix_pct > inc_lim - margin:
+            failures.append("impermissible-income")
 
         # Missing AR: skip, do not ABSTAIN.
         receivables = f.accounts_receivable
