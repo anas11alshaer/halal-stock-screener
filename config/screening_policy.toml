@@ -1,0 +1,139 @@
+# Policy for the fail-closed eval engine (Issue #7).
+# Thresholds, denylists, fusion, coverage floors, and NVIDIA model IDs live here — not in plugin code.
+
+enabled_plugins = [
+    "Activity",
+    "Ratios",
+    "HalalWallet",
+    "NportHoldings",
+]
+
+[fusion]
+name = "conjunction"
+required_plugins = ["Activity", "Ratios"]
+add_required_when_in_dataset = ["HalalWallet"]
+
+[fusion.required_plugins_by_quote_type]
+EQUITY = ["Activity", "Ratios"]
+ETF = ["NportHoldings"]
+MUTUALFUND = ["NportHoldings"]
+
+[activity]
+denied_sectors = [
+    "Financial Services",
+]
+denied_industries = [
+    "Aerospace & Defense",
+    "Asset Management",
+    "Banks - Diversified",
+    "Banks - Regional",
+    "Beverages - Brewers",
+    "Beverages - Wineries & Distilleries",
+    "Capital Markets",
+    "Credit Services",
+    "Financial Conglomerates",
+    "Gambling",
+    "Insurance Brokers",
+    "Insurance - Diversified",
+    "Insurance - Life",
+    "Insurance - Property & Casualty",
+    "Insurance - Reinsurance",
+    "Insurance - Specialty",
+    "Mortgage Finance",
+    "Resorts & Casinos",
+    "Tobacco",
+]
+
+[ratios]
+debt_to_market_cap_pct = 30.0
+cash_to_market_cap_pct = 30.0
+impermissible_income_to_revenue_pct = 5.0
+margin_pct = 0.0
+use_sec_companyfacts = true
+yfinance_interest_income_rows = [
+    "Interest Income",
+    "InterestIncome",
+    "Net Interest Income",
+]
+yfinance_revenue_rows = [
+    "Total Revenue",
+    "TotalRevenue",
+    "Operating Revenue",
+]
+yfinance_debt_rows = [
+    "Total Debt",
+    "TotalDebt",
+    "Net Debt",
+]
+yfinance_cash_rows = [
+    "Cash Cash Equivalents And Short Term Investments",
+    "CashAndCashEquivalents",
+    "Cash And Cash Equivalents",
+    "Cash And Short Term Investments",
+]
+companyfacts_interest_income_tags = [
+    "InterestIncomeOperating",
+    "InterestAndDividendIncomeOperating",
+    "InvestmentIncomeInterest",
+    "InterestIncomeExpenseNet",
+]
+companyfacts_revenue_tags = [
+    "Revenues",
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "SalesRevenueNet",
+]
+companyfacts_debt_tags = [
+    "LongTermDebt",
+    "LongTermDebtNoncurrent",
+    "DebtCurrent",
+    "ShortTermBorrowings",
+]
+companyfacts_cash_tags = [
+    "CashAndCashEquivalentsAtCarryingValue",
+    "CashCashEquivalentsAndShortTermInvestments",
+    "AvailableForSaleSecuritiesCurrent",
+    "ShortTermInvestments",
+]
+
+[etf]
+coverage_floor = 0.95
+lookthrough_max_depth = 1
+fund_quote_types = ["ETF", "MUTUALFUND"]
+skip_asset_categories = ["STIV"]
+
+[halalwallet]
+dataset_url = "https://www.halalwallet.us/api/data/halal-stock-screening-data-us.json"
+pass_verdicts = ["halal"]
+fail_verdicts = ["not_halal"]
+
+[sources]
+# App name only; contact email is SEC_CONTACT_EMAIL in .env (via src/config.py).
+sec_user_agent_name = "halal-stock-screener"
+sec_company_tickers_mf_url = "https://www.sec.gov/files/company_tickers_mf.json"
+sec_company_tickers_url = "https://www.sec.gov/files/company_tickers.json"
+sec_submissions_url = "https://data.sec.gov/submissions/CIK{cik}.json"
+sec_archives_url = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{document}"
+sec_companyfacts_url = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+openfigi_mapping_url = "https://api.openfigi.com/v3/mapping"
+openfigi_retry_seconds = 65
+
+[nvidia]
+# Bake-off on image.png (2026-08-22): MiniMax exact 1/1; nano-12b-vl exact 1/1 (429 fallback).
+# Dropped OCR (0.375), llama-3.2-11b-vision (0.500), omni-30b (tied 1/1, slower).
+chat_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+winner = "minimaxai/minimax-m3"
+fallback_429 = "nvidia/nemotron-nano-12b-v2-vl"
+screenshot_dir = "tests/fixtures/screenshots"
+screenshot_manifest = "manifest.json"
+timeout_seconds = 180
+ticker_prompt = """Extract every stock or ETF ticker symbol visible in this brokerage screenshot.
+Return JSON only, no markdown: {"tickers": ["AAPL", "MSFT"]}
+Tickers are 1-5 letters, optionally a class suffix like BRK.B or an exchange suffix like ALV.DE or 9OC.SG. Do not guess missing symbols."""
+
+[[nvidia.bakeoff_models]]
+id = "minimaxai/minimax-m3"
+kind = "vlm"
+
+[[nvidia.bakeoff_models]]
+id = "nvidia/nemotron-nano-12b-v2-vl"
+kind = "vlm"

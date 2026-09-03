@@ -47,7 +47,7 @@ halal-stock-screener/
 │   ├── resolver.py          # Conflict resolution logic across sources
 │   ├── database.py          # All DB tables, queries, and cache logic
 │   ├── image_parser.py      # Gemini image analysis
-│   ├── config.py            # Constants and config (never os.environ in feature code)
+│   ├── config.py            # Loads .env secrets + config/app.toml (never os.environ in feature code)
 │   └── scrapers/
 │       ├── base.py          # BaseScraper: retry, ETF detection, ComplianceStatus enum
 │       ├── musaffa.py

@@ -1,0 +1,21 @@
+# Eval-only fixture list of names to screen (Issue #7).
+# Not a product allowlist — plugin code must not special-case these tickers.
+
+stocks = [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "JPM",  # conventional bank; SEO-ambiguous Musaffa/Zoya case
+    "BAC",  # conventional bank
+    "MO",   # tobacco (activity fail)
+    "XOM",
+    "GOOGL",
+]
+
+etfs = [
+    "SPY",
+    "QQQ",
+    "SPUS",
+    "HLAL",
+]

@@ -26,6 +26,7 @@ data/oracle_cloud
 
 # Musaffa auth session (contains cookies — keep private)
 data/musaffa_session.json
+data/openfigi_cusip_tickers.json
 
 # Logs
 logs/*.log
@@ -64,3 +65,8 @@ deploy.sh
 
 # Generated reports
 TEST_REVIEW_REPORT.md
+
+# Operator screenshots (may contain portfolio data)
+/image.png
+tests/fixtures/screenshots/*.png
+!tests/fixtures/screenshots/.gitkeep

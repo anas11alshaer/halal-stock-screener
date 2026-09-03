@@ -1,7 +1,11 @@
 """Test scrapers with actual sites."""
+
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -9,7 +13,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from scrapers import MusaffaScraper, ZoyaScraper, ComplianceStatus, ScreeningResult
 from resolver import resolve_compliance
 
+_LIVE = os.getenv("RUN_LIVE_SCRAPER_TESTS") == "1"
 
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _LIVE, reason="Live HTTP; set RUN_LIVE_SCRAPER_TESTS=1")
 async def test_musaffa():
     """Test Musaffa scraper."""
     scraper = MusaffaScraper()
@@ -25,6 +33,8 @@ async def test_musaffa():
     return result
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _LIVE, reason="Live HTTP; set RUN_LIVE_SCRAPER_TESTS=1")
 async def test_zoya():
     """Test Zoya scraper."""
     scraper = ZoyaScraper()
@@ -52,7 +62,9 @@ def test_resolver():
 
     # Test case 2: Conflict - Musaffa HALAL, Zoya NOT_HALAL
     r1 = ScreeningResult(ticker="TEST", status=ComplianceStatus.HALAL, source="musaffa")
-    r2 = ScreeningResult(ticker="TEST", status=ComplianceStatus.NOT_HALAL, source="zoya")
+    r2 = ScreeningResult(
+        ticker="TEST", status=ComplianceStatus.NOT_HALAL, source="zoya"
+    )
     final, conflict = resolve_compliance(r1, r2)
     print(f"  HALAL vs NOT_HALAL: final={final.status.value}, conflict={conflict}")
     assert final.status == ComplianceStatus.NOT_HALAL  # More restrictive wins
@@ -60,7 +72,9 @@ def test_resolver():
 
     # Test case 3: One source NOT_COVERED
     r1 = ScreeningResult(ticker="TEST", status=ComplianceStatus.HALAL, source="musaffa")
-    r2 = ScreeningResult(ticker="TEST", status=ComplianceStatus.NOT_COVERED, source="zoya")
+    r2 = ScreeningResult(
+        ticker="TEST", status=ComplianceStatus.NOT_COVERED, source="zoya"
+    )
     final, conflict = resolve_compliance(r1, r2)
     print(f"  HALAL vs NOT_COVERED: final={final.status.value}, conflict={conflict}")
     assert final.status == ComplianceStatus.HALAL  # Use the valid source
@@ -77,6 +91,8 @@ def test_resolver():
     print("  All resolver tests passed!")
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _LIVE, reason="Live HTTP; set RUN_LIVE_SCRAPER_TESTS=1")
 async def test_combined():
     """Test both scrapers with the same ticker."""
     print("\nTesting both scrapers with AAPL...")

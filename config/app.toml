@@ -1,0 +1,26 @@
+# Non-secret application settings. Secrets stay in .env (see src/config.py).
+# Shariah thresholds live in screening_policy.toml, not here.
+
+[cache]
+ttl_hours = 24
+
+[logging]
+level = "INFO"
+
+[http]
+request_timeout = 30
+max_retries = 3
+max_tickers_per_request = 25
+
+[scrapers]
+musaffa_base_url = "https://musaffa.com/stock"
+zoya_base_url = "https://zoya.finance/stocks"
+
+[gemini]
+# Production ImageParser still uses Gemini (Issue #7 slice 7 replaces this).
+models = [
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+]

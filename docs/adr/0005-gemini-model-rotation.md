@@ -1,7 +1,7 @@
 # ADR 0005: Gemini quota — multi-key round-robin → daily model rotation
 
 Date: 2026-03-15
-Status: accepted (supersedes 2026-01-24 and 2026-03-08)
+Status: superseded by ADR 0010 (production ImageParser still Gemini until Issue #7 slice 7)
 
 ## Context
 
