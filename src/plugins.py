@@ -3,7 +3,7 @@
 import importlib
 
 from config import (
-    DELIVERY_CHANNEL_PLUGIN,
+    DELIVERY_CHANNEL_PLUGINS,
     EVIDENCE_REVIEWER_PLUGIN,
     IMAGE_EXTRACTOR_PLUGIN,
     SCREENING_PROVIDER_PLUGINS,
@@ -46,11 +46,19 @@ def load_evidence_reviewer(plugin_path: str | None = None):
     return getattr(importlib.import_module(module_name), class_name)()
 
 
+def load_delivery_channels(plugin_paths: list[str] | None = None) -> list:
+    """Instantiate every configured user-facing transport."""
+    channels: list = []
+    for plugin_path in plugin_paths or DELIVERY_CHANNEL_PLUGINS:
+        module_name, class_name = plugin_path.split(":", 1)
+        channels.append(getattr(importlib.import_module(module_name), class_name)())
+    return channels
+
+
 def load_delivery_channel(plugin_path: str | None = None):
-    """Load the configured user-facing transport."""
-    path = DELIVERY_CHANNEL_PLUGIN if plugin_path is None else plugin_path
-    module_name, class_name = path.split(":", 1)
-    return getattr(importlib.import_module(module_name), class_name)()
+    """Load the first configured user-facing transport."""
+    paths = [plugin_path] if plugin_path else None
+    return load_delivery_channels(paths)[0]
 
 
 def load_image_extractor(image_cache=None, plugin_path: str | None = None):

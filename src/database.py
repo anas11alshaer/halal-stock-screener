@@ -352,7 +352,7 @@ class CheckHistory:
 
     @staticmethod
     def record(
-        user_id: int,
+        user_id: int | str,
         ticker: str,
         final_status: str,
         provider_results: dict | None = None,
@@ -389,7 +389,7 @@ class CheckHistory:
             logger.debug(f"Recorded check: user={user_id}, ticker={ticker}, conflict={is_conflict}")
 
     @staticmethod
-    def get_user_history(user_id: int, limit: int = 20) -> list:
+    def get_user_history(user_id: int | str, limit: int = 20) -> list:
         """Get recent checks for a user."""
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -408,7 +408,7 @@ class CheckHistory:
             return [dict(row) for row in cursor.fetchall()]
 
     @staticmethod
-    def get_stats(user_id: int) -> dict:
+    def get_stats(user_id: int | str) -> dict:
         """Get statistics for a user."""
         with get_connection() as conn:
             cursor = conn.cursor()

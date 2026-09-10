@@ -66,7 +66,7 @@ are selected by `module:Class` paths in `.env`:
 SCREENING_PROVIDER_PLUGINS=scrapers.musaffa:MusaffaScraper,scrapers.zoya:ZoyaScraper,scrapers.daleel:DaleelProvider
 EVIDENCE_REVIEWER_PLUGIN=
 IMAGE_EXTRACTOR_PLUGIN=
-DELIVERY_CHANNEL_PLUGIN=channels.telegram:TelegramChannel
+DELIVERY_CHANNEL_PLUGINS=channels.telegram:TelegramChannel
 ```
 
 Reorder, remove, or replace a path without changing orchestration, voting, caching, or
@@ -84,6 +84,13 @@ To enable exceptional Gemini evidence review, set `GEMINI_API_KEY` and change
 To enable image ticker extraction, set `IMAGE_EXTRACTOR_PLUGIN` to
 `image_parser:GeminiImageExtractor`. A replacement extractor must extend
 `image_extractors.base.ImageExtractor` and implement `extract_tickers(image_data)`.
+
+`DELIVERY_CHANNEL_PLUGINS` accepts a comma-separated list; each channel runs in its
+own thread. To serve Slack alongside Telegram, append `channels.slack:SlackChannel`
+and set `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_APP_TOKEN` (`xapp-…`). The Slack
+channel uses Socket Mode, so no public URL is required. It answers `@bot AAPL`
+mentions, DM messages and image uploads, and `/check`, `/history`, `/stats` slash
+commands (register those command names in the Slack app settings).
 
 Confirmed providers vote by status. A unique majority wins, any tied highest vote is
 reported as `NOT_HALAL`, and one confirmed result is visibly marked provisional.

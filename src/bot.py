@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import config
 from config import LOG_FILE, LOG_LEVEL
-from plugins import load_delivery_channel
+from plugins import load_delivery_channels
 
 log_handlers = [logging.StreamHandler(sys.stdout)]
 try:
@@ -151,7 +151,16 @@ def start_health_server(port: int | None = None, screener_factory=None) -> None:
 
 def main():
     threading.Thread(target=start_health_server, daemon=True).start()
-    load_delivery_channel().run()
+    channels = load_delivery_channels()
+    if len(channels) == 1:
+        channels[0].run()
+        return
+    # Each channel's run() owns its event loop, so every transport gets a thread.
+    threads = [threading.Thread(target=channel.run, daemon=True) for channel in channels]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
 
 if __name__ == "__main__":

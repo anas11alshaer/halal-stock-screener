@@ -20,6 +20,10 @@ LOGS_DIR.mkdir(exist_ok=True)
 # Telegram configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+# Slack configuration (Socket Mode: websocket connection, no public URL needed)
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
+
 # Gemini API configuration (single key)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
@@ -57,7 +61,14 @@ SCREENING_PROVIDER_PLUGINS = [
     if value.strip()
 ]
 EVIDENCE_REVIEWER_PLUGIN = os.getenv("EVIDENCE_REVIEWER_PLUGIN", "reviewer:GeminiEvidenceReviewer")
-DELIVERY_CHANNEL_PLUGIN = os.getenv("DELIVERY_CHANNEL_PLUGIN", "channels.telegram:TelegramChannel")
+DELIVERY_CHANNEL_PLUGINS = [
+    value.strip()
+    for value in os.getenv(
+        "DELIVERY_CHANNEL_PLUGINS",
+        os.getenv("DELIVERY_CHANNEL_PLUGIN", "channels.telegram:TelegramChannel"),
+    ).split(",")
+    if value.strip()
+]
 IMAGE_EXTRACTOR_PLUGIN = os.getenv("IMAGE_EXTRACTOR_PLUGIN", "image_parser:GeminiImageExtractor")
 
 # Gemini model rotation (first model has highest rate limits)
