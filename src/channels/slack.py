@@ -211,4 +211,9 @@ class SlackChannel:
         self.app.error(self.handle_error)
         self.screener.clear_expired_cache()
         logger.info("Slack channel is running")
-        asyncio.run(AsyncSocketModeHandler(self.app, SLACK_APP_TOKEN).start_async())
+        asyncio.run(self._serve())
+
+    async def _serve(self):
+        # AsyncSocketModeHandler builds an aiohttp session at construction,
+        # so it must be created inside the running event loop.
+        await AsyncSocketModeHandler(self.app, SLACK_APP_TOKEN).start_async()
