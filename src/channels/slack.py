@@ -16,11 +16,8 @@ from screener import StockScreener
 logger = logging.getLogger(__name__)
 
 _MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
-_BOLD_RE = re.compile(r"</?b>")
-_CODE_RE = re.compile(r"</?code>")
-_ITALIC_RE = re.compile(r"</?i>")
-_PRE_RE = re.compile(r"</?pre>")
-_LINK_RE = re.compile(r'<a href="([^"]+)">([^<]*)</a>')
+_TOKEN_RE = re.compile(r'<a href="([^"]+)">([^<]*)</a>|</?(b|code|i|pre)>')
+_TAG_MARKUP = {"b": "*", "code": "`", "i": "_", "pre": "```"}
 
 HELP_MESSAGE = """*Halal Stock Screener*
 
@@ -39,19 +36,32 @@ Or send an image with stock tickers in a DM.
 `/stats` - Your statistics"""
 
 
+def _slack_escape(text: str) -> str:
+    """Re-encode HTML-escaped text so Slack never treats it as markup."""
+    text = html.unescape(text)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def to_slack_mrkdwn(message: str) -> str:
-    """Render a Telegram-HTML screening message as Slack mrkdwn."""
-    message = _LINK_RE.sub(
-        lambda match: f"<{match.group(1)}|{match.group(2)}>"
-        if match.group(2)
-        else f"<{match.group(1)}>",
-        message,
-    )
-    message = _BOLD_RE.sub("*", message)
-    message = _CODE_RE.sub("`", message)
-    message = _ITALIC_RE.sub("_", message)
-    message = _PRE_RE.sub("```", message)
-    return html.unescape(message)
+    """Render a Telegram-HTML screening message as Slack mrkdwn.
+
+    Only the tags emitted by the screener are treated as markup; all other text
+    is kept escaped so provider data cannot inject Slack mentions or links.
+    """
+    parts = []
+    pos = 0
+    for match in _TOKEN_RE.finditer(message):
+        parts.append(_slack_escape(message[pos : match.start()]))
+        href, label, tag = match.groups()
+        if tag:
+            parts.append(_TAG_MARKUP[tag])
+        else:
+            href = _slack_escape(href).replace("|", "%7C")
+            label = _slack_escape(label).replace("|", " ")
+            parts.append(f"<{href}|{label}>" if label else f"<{href}>")
+        pos = match.end()
+    parts.append(_slack_escape(message[pos:]))
+    return "".join(parts)
 
 
 class SlackChannel:
@@ -192,7 +202,7 @@ class SlackChannel:
     @staticmethod
     async def _respond_with_response(response, respond, client, command):
         messages = [to_slack_mrkdwn(m) for m in response.format_messages()]
-        await respond(messages[0])
+        await respond(text=messages[0], response_type="ephemeral")
         for message in messages[1:]:
             await client.chat_postEphemeral(
                 channel=command["channel_id"], user=command["user_id"], text=message

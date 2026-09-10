@@ -1,6 +1,6 @@
 python-telegram-bot>=21.0
-slack-bolt>=1.23.0
-aiohttp>=3.9.0
+slack-bolt==1.30.0
+aiohttp==3.14.3
 google-genai>=1.0.0
 httpx>=0.27.0
 python-dotenv>=1.0.0

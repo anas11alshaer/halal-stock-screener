@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from channels.slack import SlackChannel, to_slack_mrkdwn
 from plugins import load_delivery_channels
-from screener import ScreenResponse
 from scrapers import AssetType, ComplianceStatus, ScreeningResult
+from screener import ScreenResponse
 
 
 class FakeScreener:
@@ -75,9 +75,11 @@ class FakeAck:
 class FakeRespond:
     def __init__(self):
         self.messages = []
+        self.kwargs = {}
 
-    async def __call__(self, text):
+    async def __call__(self, text, **kwargs):
         self.messages.append(text)
+        self.kwargs = kwargs
 
 
 def halal_response() -> ScreenResponse:
@@ -106,7 +108,20 @@ def test_to_slack_mrkdwn_converts_telegram_html():
     assert to_slack_mrkdwn(html) == (
         "*Apple Inc.* (`AAPL`) · Stock\n"
         "✅ verdict: *Halal*\n"
-        "<https://musaffa.com/stock/AAPL|Open source> & more"
+        "<https://musaffa.com/stock/AAPL|Open source> &amp; more"
+    )
+
+
+def test_to_slack_mrkdwn_keeps_escaped_provider_text_inert():
+    html = "Evidence: “&lt;@U123&gt; &lt;!channel&gt; &lt;https://evil.test|Zoya&gt;”"
+    assert to_slack_mrkdwn(html) == (
+        "Evidence: “&lt;@U123&gt; &lt;!channel&gt; &lt;https://evil.test|Zoya&gt;”"
+    )
+
+
+def test_to_slack_mrkdwn_neutralises_pipe_in_link_label():
+    assert to_slack_mrkdwn('<a href="https://x.test/?a=1&amp;b=2">A|B</a>') == (
+        "<https://x.test/?a=1&amp;b=2|A B>"
     )
 
 
@@ -186,6 +201,7 @@ def test_check_command_responds_with_mrkdwn():
 
     assert ack.called
     assert "*Apple Inc.*" in respond.messages[0]
+    assert respond.kwargs == {"response_type": "ephemeral"}
 
 
 def test_history_command_empty():
