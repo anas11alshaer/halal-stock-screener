@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import queue
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 import config
 from config import LOG_FILE, LOG_LEVEL
-from plugins import load_delivery_channel
+from plugins import load_delivery_channels
 
 log_handlers = [logging.StreamHandler(sys.stdout)]
 try:
@@ -149,9 +150,37 @@ def start_health_server(port: int | None = None, screener_factory=None) -> None:
     server.serve_forever()
 
 
+def run_channels(channels) -> None:
+    """Run every channel in its own thread; exit nonzero as soon as any of them stops."""
+    exits: queue.Queue = queue.Queue()
+
+    def supervise(channel):
+        name = type(channel).__name__
+        try:
+            channel.run()
+        except BaseException as exc:
+            exits.put((name, exc))
+        else:
+            exits.put((name, None))
+
+    # Each channel's run() owns its event loop, so every transport gets a thread.
+    for channel in channels:
+        threading.Thread(target=supervise, args=(channel,), daemon=True).start()
+    name, exc = exits.get()
+    if exc is None:
+        logger.error("%s stopped unexpectedly; shutting down", name)
+    else:
+        logger.error("%s failed: %r; shutting down", name, exc)
+    sys.exit(1)
+
+
 def main():
     threading.Thread(target=start_health_server, daemon=True).start()
-    load_delivery_channel().run()
+    channels = load_delivery_channels()
+    if len(channels) == 1:
+        channels[0].run()
+        return
+    run_channels(channels)
 
 
 if __name__ == "__main__":

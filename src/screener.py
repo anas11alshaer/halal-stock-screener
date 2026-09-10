@@ -174,12 +174,12 @@ class StockScreener:
             logger.warning("Image extractor not available: %s", exc)
 
     async def screen_tickers(
-        self, tickers: list[str], user_id: int | None = None
+        self, tickers: list[str], user_id: int | str | None = None
     ) -> ScreenResponse:
         return await self.screen_queries(tickers, user_id)
 
     async def screen_queries(
-        self, queries: list[str], user_id: int | None = None
+        self, queries: list[str], user_id: int | str | None = None
     ) -> ScreenResponse:
         if not queries:
             return ScreenResponse([], [], error="No security name or ticker provided")
@@ -218,7 +218,7 @@ class StockScreener:
         return ScreenResponse(all_results, all_cached, source_results=all_source_results)
 
     async def _screen_batch(
-        self, securities: list[Security], user_id: int | None
+        self, securities: list[Security], user_id: int | str | None
     ) -> ScreenResponse:
         provider_results: dict[str, dict[str, ScreeningResult]] = {
             security.symbol: {} for security in securities
@@ -335,13 +335,15 @@ class StockScreener:
             checked_at=result.checked_at,
         )
 
-    async def screen_text(self, text: str, user_id: int | None = None) -> ScreenResponse:
+    async def screen_text(self, text: str, user_id: int | str | None = None) -> ScreenResponse:
         tickers = parse_text_for_tickers(text)
         if tickers:
             return await self.screen_queries(tickers, user_id)
         return await self.screen_queries([text.strip()], user_id)
 
-    async def screen_image(self, image_data: bytes, user_id: int | None = None) -> ScreenResponse:
+    async def screen_image(
+        self, image_data: bytes, user_id: int | str | None = None
+    ) -> ScreenResponse:
         if self.image_extractor is None:
             return ScreenResponse(
                 [], [], error="Image analysis is unavailable. Set GEMINI_API_KEY."
@@ -365,10 +367,10 @@ class StockScreener:
             return ScreenResponse([], [], error="No stock or ETF tickers found in the image.")
         return await self.screen_queries(tickers, user_id)
 
-    def get_user_history(self, user_id: int, limit: int = 20) -> list[dict]:
+    def get_user_history(self, user_id: int | str, limit: int = 20) -> list[dict]:
         return CheckHistory.get_user_history(user_id, limit)
 
-    def get_user_stats(self, user_id: int) -> dict:
+    def get_user_stats(self, user_id: int | str) -> dict:
         return CheckHistory.get_stats(user_id)
 
     def clear_expired_cache(self):

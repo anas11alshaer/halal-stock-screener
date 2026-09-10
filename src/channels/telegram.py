@@ -1,7 +1,9 @@
 """Telegram delivery-channel adapter."""
 
+import asyncio
 import logging
 import sys
+import threading
 from io import BytesIO
 
 from telegram import Update
@@ -145,4 +147,10 @@ Or send an image with stock tickers.
         application.add_error_handler(self.error_handler)
         self.screener.clear_expired_cache()
         logger.info("Telegram channel is running")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # In multi-channel mode this runs in a worker thread, which has no event
+        # loop by default and cannot install signal handlers.
+        kwargs = {}
+        if threading.current_thread() is not threading.main_thread():
+            asyncio.set_event_loop(asyncio.new_event_loop())
+            kwargs["stop_signals"] = None
+        application.run_polling(allowed_updates=Update.ALL_TYPES, **kwargs)
