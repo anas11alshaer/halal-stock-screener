@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import threading
 from io import BytesIO
 
 from telegram import Update
@@ -145,4 +146,11 @@ Or send an image with stock tickers.
         application.add_error_handler(self.error_handler)
         self.screener.clear_expired_cache()
         logger.info("Telegram channel is running")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Signal handlers require the main thread; in multi-channel mode this
+        # runs in a worker thread, so PTB must not install them there.
+        kwargs = (
+            {}
+            if threading.current_thread() is threading.main_thread()
+            else {"stop_signals": None}
+        )
+        application.run_polling(allowed_updates=Update.ALL_TYPES, **kwargs)
