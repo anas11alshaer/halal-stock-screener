@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 
 import yfinance as yf
 
@@ -14,14 +15,15 @@ class YahooPriceProvider(PriceProvider):
     """Fetch live quotes via yfinance fast_info, one failure per ticker."""
 
     async def get_prices(self, tickers: list[str]) -> list[PriceQuote]:
-        return [await asyncio.to_thread(self._fetch, ticker) for ticker in tickers]
+        return list(await asyncio.gather(*(asyncio.to_thread(self._fetch, t) for t in tickers)))
 
     @staticmethod
     def _fetch(ticker: str) -> PriceQuote:
         symbol = ticker.strip().upper()
-        quote_url = f"https://finance.yahoo.com/quote/{symbol}"
+        yahoo_symbol = symbol.replace(".", "-") if re.fullmatch(r"[A-Z]{1,5}\.[A-Z]", symbol) else symbol
+        quote_url = f"https://finance.yahoo.com/quote/{yahoo_symbol}"
         try:
-            info = yf.Ticker(symbol).fast_info
+            info = yf.Ticker(yahoo_symbol).fast_info
             price = info.last_price
             if price is None:
                 return PriceQuote(

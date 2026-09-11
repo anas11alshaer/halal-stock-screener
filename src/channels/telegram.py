@@ -37,7 +37,10 @@ def _render_price_message(quotes, truncated: bool) -> str:
     lines = ["<b>Live Prices</b>", ""]
     for quote in quotes:
         safe_ticker = html.escape(quote.ticker)
-        link = f'<a href="{html.escape(quote.quote_url, quote=True)}">{safe_ticker}</a>'
+        if quote.quote_url:
+            link = f'<a href="{html.escape(quote.quote_url, quote=True)}">{safe_ticker}</a>'
+        else:
+            link = f"<code>{safe_ticker}</code>"
         if quote.error is not None or quote.price is None:
             lines.append(f"{link}: ⚠️ {html.escape(quote.error or 'No price available')}")
             continue

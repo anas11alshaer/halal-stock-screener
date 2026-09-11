@@ -1,6 +1,7 @@
 """Tests for the /price live-price plugin."""
 
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from channels.telegram import TelegramChannel
+from channels.telegram import TelegramChannel, _render_price_message
 from config import MAX_TICKERS_PER_REQUEST
 from plugins import load_price_provider
 from prices.base import PriceProvider, PriceQuote
@@ -105,6 +106,57 @@ async def test_yahoo_exception_is_quote_error_not_raise():
         quotes = await YahooPriceProvider().get_prices(["AAPL"])
     assert quotes[0].price is None
     assert "boom" in quotes[0].error
+
+
+def _fetch_with_captured_symbol(ticker):
+    import prices.yahoo as yahoo_module
+
+    fast_info = SimpleNamespace(last_price=1.0, currency="USD", previous_close=1.0)
+    seen = []
+
+    class CapturingTicker(_fake_ticker(fast_info)):
+        def __init__(self, symbol):
+            super().__init__(symbol)
+            seen.append(symbol)
+
+    with patch.object(yahoo_module.yf, "Ticker", CapturingTicker):
+        quote = YahooPriceProvider._fetch(ticker)
+    return quote, seen
+
+
+def test_yahoo_maps_dotted_share_class_to_dash():
+    quote, seen = _fetch_with_captured_symbol("BRK.B")
+    assert seen == ["BRK-B"]
+    assert quote.ticker == "BRK.B"
+    assert quote.quote_url == "https://finance.yahoo.com/quote/BRK-B"
+
+
+def test_yahoo_keeps_exchange_suffix():
+    quote, seen = _fetch_with_captured_symbol("7203.T")
+    assert seen == ["7203.T"]
+    assert quote.ticker == "7203.T"
+    assert quote.quote_url == "https://finance.yahoo.com/quote/7203.T"
+
+
+@pytest.mark.asyncio
+async def test_yahoo_fetches_concurrently_in_request_order():
+    def slow_fetch(ticker):
+        time.sleep(0.2)
+        return PriceQuote(ticker=ticker)
+
+    tickers = [f"T{i}" for i in range(5)]
+    with patch.object(YahooPriceProvider, "_fetch", staticmethod(slow_fetch)):
+        start = time.monotonic()
+        quotes = await YahooPriceProvider().get_prices(tickers)
+        elapsed = time.monotonic() - start
+    assert elapsed < 0.6
+    assert [q.ticker for q in quotes] == tickers
+
+
+def test_render_without_quote_url_uses_code_not_link():
+    body = _render_price_message([PriceQuote(ticker="AAPL", price=1.0)], False)
+    assert "<code>AAPL</code>" in body
+    assert "<a href" not in body
 
 
 def test_loader_default_is_yahoo():
