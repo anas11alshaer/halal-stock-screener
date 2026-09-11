@@ -154,15 +154,15 @@ def test_mention_without_text_shows_help():
     assert client.updates == []
 
 
-def test_message_ignores_non_dm_and_bot_messages():
+def test_message_ignores_bot_and_subtype_messages():
     screener = FakeScreener(halal_response())
     channel = SlackChannel(screening_service=screener)
     say, client = FakeSay(), FakeClient()
 
     for event in (
-        {"channel_type": "channel", "text": "AAPL", "user": "U1"},
         {"channel_type": "im", "text": "AAPL", "bot_id": "B1"},
         {"channel_type": "im", "text": "AAPL", "user": "U1", "subtype": "message_changed"},
+        {"channel_type": "channel", "text": "AAPL", "user": "U1", "subtype": "channel_name"},
     ):
         asyncio.run(channel.handle_message(event, say, client))
 
@@ -179,6 +179,40 @@ def test_dm_message_screens_text():
     asyncio.run(channel.handle_message(event, say, client))
 
     assert screener.text_calls == [("MSFT", "U2")]
+
+
+def test_channel_message_screens_without_mention():
+    screener = FakeScreener(halal_response())
+    channel = SlackChannel(screening_service=screener)
+    say, client = FakeSay(), FakeClient()
+    event = {"channel_type": "channel", "text": "AAPL", "user": "U2"}
+
+    asyncio.run(channel.handle_message(event, say, client, context={"bot_user_id": "U0BOT"}))
+
+    assert screener.text_calls == [("AAPL", "U2")]
+
+
+def test_private_channel_message_screens_without_mention():
+    screener = FakeScreener(halal_response())
+    channel = SlackChannel(screening_service=screener)
+    say, client = FakeSay(), FakeClient()
+    event = {"channel_type": "group", "text": "MSFT", "user": "U3"}
+
+    asyncio.run(channel.handle_message(event, say, client, context={"bot_user_id": "U0BOT"}))
+
+    assert screener.text_calls == [("MSFT", "U3")]
+
+
+def test_channel_mention_is_left_to_handle_mention():
+    screener = FakeScreener(halal_response())
+    channel = SlackChannel(screening_service=screener)
+    say, client = FakeSay(), FakeClient()
+    event = {"channel_type": "channel", "text": "<@U0BOT> AAPL", "user": "U2"}
+
+    asyncio.run(channel.handle_message(event, say, client, context={"bot_user_id": "U0BOT"}))
+
+    assert screener.text_calls == []
+    assert say.messages == []
 
 
 def test_check_command_empty_args_shows_usage():
