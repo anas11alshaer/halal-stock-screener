@@ -40,6 +40,26 @@ Health check: `curl http://localhost:8080` → `OK` (threaded server on `$PORT`)
 Bot commands: `/start`, `/help`, `/check AAPL MSFT`, `/check Apple`, `/price AAPL`, `/history`,
 `/stats`; or send a ticker, company/fund name, or portfolio screenshot.
 
+## Deploy
+
+Merging to `main` deploys automatically via the `deploy` job in
+`.github/workflows/ci.yml`: it runs only on pushes to `main`, only after the
+lint+test job is green, and replays the manual `deploy.bat` flow — scp
+`src/`, `requirements.txt`, `Dockerfile`, `.dockerignore` to `~/stock-screener`
+on the host, `docker build`, then stop/rm/recreate the `stock-screener`
+container with the host-side `.env` and `data/` volume (`.env` is never
+transferred). Each build is tagged `stock-screener-bot:<sha>` plus `:latest`.
+
+Required GitHub secrets (repo Settings → Secrets → Actions; values are never
+committed): `SSH_HOST` (host address), `SSH_USER` (login user),
+`SSH_KEY` (private key for that host).
+
+Post-deploy, the job probes `GET /` inside the container (must return `OK`,
+12 × 5s retries) and fails loudly — with a log tail — if the container is
+unhealthy. Rollback: on the host, `docker stop stock-screener; docker rm
+stock-screener;` then `docker run` the previous `:<sha>` image with the same
+flags, since every deploy keeps its sha-tagged image.
+
 ## Free provider profile
 
 The default profile makes no paid API calls:

@@ -6,6 +6,7 @@ Keep user-facing bullets. Internal refactors stay out unless they change how som
 
 ### Added
 
+- Automatic deploy on merge to `main`: the CI `deploy` job (after green lint+tests) replays the manual deploy flow over SSH, tags each image `<sha>` + `latest`, and fails loudly on post-deploy health check; needs `SSH_HOST`/`SSH_USER`/`SSH_KEY` secrets; rollback = re-run previous sha image.
 - `/price AAPL MSFT` Telegram command showing live Yahoo prices with day-change % and quote links (up to 25 tickers, uncached); provider is replaceable via `PRICE_PROVIDER_PLUGIN`.
 - Internal `GET /screen?ticker=X` JSON endpoint on the health server for the whale_scout service on the same VM — full verdict (status, evidence, confidence, per-source results) as JSON; requires `SCREEN_API_TOKEN` bearer auth (403 when unset); unknown paths now return 404 (`e80431d`).
 - Configurable screening-provider, Gemini-reviewer, and delivery-channel plugins.
