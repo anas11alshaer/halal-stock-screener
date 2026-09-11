@@ -70,6 +70,7 @@ DELIVERY_CHANNEL_PLUGINS = [
     if value.strip()
 ]
 IMAGE_EXTRACTOR_PLUGIN = os.getenv("IMAGE_EXTRACTOR_PLUGIN", "image_parser:GeminiImageExtractor")
+PRICE_PROVIDER_PLUGIN = os.getenv("PRICE_PROVIDER_PLUGIN", "prices.yahoo:YahooPriceProvider")
 
 # Gemini model rotation (first model has highest rate limits)
 # Each request cycles to the next model; counter resets daily

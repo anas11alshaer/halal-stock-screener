@@ -37,7 +37,7 @@ If this can brick a board, recovery is: N/A — hosted service, no flashing.
 
 Health check: `curl http://localhost:8080` → `OK` (threaded server on `$PORT`).
 
-Bot commands: `/start`, `/help`, `/check AAPL MSFT`, `/check Apple`, `/history`,
+Bot commands: `/start`, `/help`, `/check AAPL MSFT`, `/check Apple`, `/price AAPL`, `/history`,
 `/stats`; or send a ticker, company/fund name, or portfolio screenshot.
 
 ## Free provider profile
@@ -67,7 +67,10 @@ SCREENING_PROVIDER_PLUGINS=scrapers.musaffa:MusaffaScraper,scrapers.zoya:ZoyaScr
 EVIDENCE_REVIEWER_PLUGIN=
 IMAGE_EXTRACTOR_PLUGIN=
 DELIVERY_CHANNEL_PLUGINS=channels.telegram:TelegramChannel
+PRICE_PROVIDER_PLUGIN=prices.yahoo:YahooPriceProvider
 ```
+
+`PRICE_PROVIDER_PLUGIN` selects the `/price` live-quote provider; the default Yahoo provider needs no API key.
 
 Reorder, remove, or replace a path without changing orchestration, voting, caching, or
 rendering code. Optional keyed providers are:
