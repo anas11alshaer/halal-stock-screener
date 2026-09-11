@@ -93,7 +93,7 @@ own thread. To serve Slack alongside Telegram, append `channels.slack:SlackChann
 and set `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_APP_TOKEN` (`xapp-…`). The Slack
 channel uses Socket Mode, so no public URL is required. It answers ticker text in
 channels it has joined (no `@` required), `@bot AAPL` mentions, DM messages and
-image uploads, and `/check`, `/history`, `/stats` slash commands (register those
+image uploads, and `/check`, `/price`, `/history`, `/stats` slash commands (register those
 command names in the Slack app settings). Slack will deliver every message in
 those channels, so invite the bot only to ticker channels.
 
