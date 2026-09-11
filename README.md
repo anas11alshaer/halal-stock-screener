@@ -88,9 +88,11 @@ To enable image ticker extraction, set `IMAGE_EXTRACTOR_PLUGIN` to
 `DELIVERY_CHANNEL_PLUGINS` accepts a comma-separated list; each channel runs in its
 own thread. To serve Slack alongside Telegram, append `channels.slack:SlackChannel`
 and set `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_APP_TOKEN` (`xapp-…`). The Slack
-channel uses Socket Mode, so no public URL is required. It answers `@bot AAPL`
-mentions, DM messages and image uploads, and `/check`, `/history`, `/stats` slash
-commands (register those command names in the Slack app settings).
+channel uses Socket Mode, so no public URL is required. It answers ticker text in
+channels it has joined (no `@` required), `@bot AAPL` mentions, DM messages and
+image uploads, and `/check`, `/history`, `/stats` slash commands (register those
+command names in the Slack app settings). Slack will deliver every message in
+those channels, so invite the bot only to ticker channels.
 
 Confirmed providers vote by status. A unique majority wins, any tied highest vote is
 reported as `NOT_HALAL`, and one confirmed result is visibly marked provisional.

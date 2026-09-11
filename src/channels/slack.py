@@ -80,17 +80,26 @@ class SlackChannel:
             return
         await self._screen_text_and_reply(text, event["user"], say, client)
 
-    async def handle_message(self, event, say, client):
-        if event.get("bot_id") or event.get("channel_type") != "im":
+    async def handle_message(self, event, say, client, context=None):
+        if event.get("bot_id") or not event.get("user"):
+            return
+        channel_type = event.get("channel_type")
+        if channel_type not in ("im", "channel", "group", "mpim"):
             return
         subtype = event.get("subtype")
         if subtype == "file_share":
+            if channel_type != "im":
+                return
             await self._handle_files(event, say, client)
             return
-        if subtype is not None or not event.get("user"):
+        if subtype is not None:
             return
         text = (event.get("text") or "").strip()
         if not text:
+            return
+        # @mentions also arrive as message events; handle_mention owns those.
+        bot_user_id = None if context is None else context.get("bot_user_id")
+        if bot_user_id and f"<@{bot_user_id}>" in text:
             return
         if text.lower() in ("help", "start", "/start", "/help"):
             await say(HELP_MESSAGE)

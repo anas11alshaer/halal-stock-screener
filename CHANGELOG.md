@@ -15,6 +15,7 @@ Keep user-facing bullets. Internal refactors stay out unless they change how som
 
 ### Changed
 
+- Slack answers channel messages without an `@mention` in public and private channels the bot has joined. `@mentions` still work and are not double-handled.
 - Confirmed providers now use majority voting; tied votes resolve to Not Halal.
 - Cache/history storage is provider-neutral and retains evidence and failure metadata.
 - Network requests share connections and retry only transient failures.
