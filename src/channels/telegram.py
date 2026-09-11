@@ -1,6 +1,7 @@
 """Telegram delivery-channel adapter."""
 
 import asyncio
+import html
 import logging
 import sys
 import threading
@@ -15,17 +16,55 @@ from telegram.ext import (
     filters,
 )
 
-from config import TELEGRAM_BOT_TOKEN
+from config import MAX_TICKERS_PER_REQUEST, TELEGRAM_BOT_TOKEN
+from plugins import load_price_provider
 from screener import StockScreener
 
 logger = logging.getLogger(__name__)
 
 
+class _PriceResponse:
+    """Single-message wrapper so prices reuse `_deliver_response`."""
+
+    def __init__(self, message: str):
+        self._message = message
+
+    def format_messages(self) -> list[str]:
+        return [self._message]
+
+
+def _render_price_message(quotes, truncated: bool) -> str:
+    lines = ["<b>Live Prices</b>", ""]
+    for quote in quotes:
+        safe_ticker = html.escape(quote.ticker)
+        link = f'<a href="{html.escape(quote.quote_url, quote=True)}">{safe_ticker}</a>'
+        if quote.error is not None or quote.price is None:
+            lines.append(f"{link}: ⚠️ {html.escape(quote.error or 'No price available')}")
+            continue
+        parts = [str(quote.price)]
+        if quote.currency:
+            parts.append(html.escape(quote.currency))
+        if quote.change_pct is not None:
+            sign = "+" if quote.change_pct >= 0 else ""
+            parts.append(f"({sign}{quote.change_pct:.2f}%)")
+        lines.append(f"{link}: {' '.join(parts)}")
+    if truncated:
+        lines.append(f"<i>Showing first {MAX_TICKERS_PER_REQUEST} tickers.</i>")
+    return "\n".join(lines)
+
+
 class TelegramChannel:
     """Receive Telegram updates and deliver rendered screening responses."""
 
-    def __init__(self, screening_service=None):
+    def __init__(self, screening_service=None, price_provider=None):
         self.screener = screening_service or StockScreener()
+        self._price_provider = price_provider
+
+    @property
+    def price_provider(self):
+        if self._price_provider is None:
+            self._price_provider = load_price_provider()
+        return self._price_provider
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = """<b>Halal Stock Screener</b>
@@ -41,6 +80,7 @@ Or send an image with stock tickers.
 <b>Commands</b>
 /check <code>AAPL MSFT</code> - Check tickers
 /check <code>Apple</code> - Resolve a company name
+/price <code>AAPL MSFT</code> - Live prices
 /history - Recent checks
 /stats - Your statistics"""
         await update.message.reply_text(message, parse_mode="HTML")
@@ -58,6 +98,22 @@ Or send an image with stock tickers.
         status_message = await update.message.reply_text("Checking...")
         response = await self.screener.screen_text(" ".join(context.args), update.effective_user.id)
         await self._deliver_response(status_message, update, response)
+
+    async def price_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: <code>/price AAPL MSFT</code>",
+                parse_mode="HTML",
+            )
+            return
+        tickers = [arg.strip().upper() for arg in context.args if arg.strip()]
+        truncated = len(tickers) > MAX_TICKERS_PER_REQUEST
+        tickers = tickers[:MAX_TICKERS_PER_REQUEST]
+        status_message = await update.message.reply_text("Fetching prices...")
+        quotes = await self.price_provider.get_prices(tickers)
+        await self._deliver_response(
+            status_message, update, _PriceResponse(_render_price_message(quotes, truncated))
+        )
 
     async def history_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         history = self.screener.get_user_history(update.effective_user.id, limit=15)
@@ -140,6 +196,7 @@ Or send an image with stock tickers.
         application.add_handler(CommandHandler("start", self.start_command))
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(CommandHandler("check", self.check_command))
+        application.add_handler(CommandHandler("price", self.price_command))
         application.add_handler(CommandHandler("history", self.history_command))
         application.add_handler(CommandHandler("stats", self.stats_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))

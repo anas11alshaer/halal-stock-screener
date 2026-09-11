@@ -37,7 +37,7 @@ If this can brick a board, recovery is: N/A — hosted service, no flashing.
 
 Health check: `curl http://localhost:8080` → `OK` (threaded server on `$PORT`).
 
-Bot commands: `/start`, `/help`, `/check AAPL MSFT`, `/check Apple`, `/history`,
+Bot commands: `/start`, `/help`, `/check AAPL MSFT`, `/check Apple`, `/price AAPL`, `/history`,
 `/stats`; or send a ticker, company/fund name, or portfolio screenshot.
 
 ## Free provider profile
