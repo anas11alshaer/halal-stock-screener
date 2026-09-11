@@ -108,34 +108,55 @@ async def test_yahoo_exception_is_quote_error_not_raise():
     assert "boom" in quotes[0].error
 
 
-def _fetch_with_captured_symbol(ticker):
+def _fetch_with_captured_symbol(ticker, priced_symbols):
+    """Run _fetch with a fake Ticker that only has a price for priced_symbols."""
     import prices.yahoo as yahoo_module
 
-    fast_info = SimpleNamespace(last_price=1.0, currency="USD", previous_close=1.0)
     seen = []
 
-    class CapturingTicker(_fake_ticker(fast_info)):
+    class CapturingTicker:
         def __init__(self, symbol):
-            super().__init__(symbol)
             seen.append(symbol)
+            self.symbol = symbol
+
+        @property
+        def fast_info(self):
+            if self.symbol in priced_symbols:
+                return SimpleNamespace(last_price=1.0, currency="USD", previous_close=1.0)
+            return SimpleNamespace(last_price=None, currency=None, previous_close=None)
 
     with patch.object(yahoo_module.yf, "Ticker", CapturingTicker):
         quote = YahooPriceProvider._fetch(ticker)
     return quote, seen
 
 
-def test_yahoo_maps_dotted_share_class_to_dash():
-    quote, seen = _fetch_with_captured_symbol("BRK.B")
-    assert seen == ["BRK-B"]
+def test_yahoo_falls_back_to_dash_share_class_when_dotted_has_no_price():
+    quote, seen = _fetch_with_captured_symbol("BRK.B", {"BRK-B"})
+    assert seen == ["BRK.B", "BRK-B"]
     assert quote.ticker == "BRK.B"
+    assert quote.price == 1.0
     assert quote.quote_url == "https://finance.yahoo.com/quote/BRK-B"
 
 
+def test_yahoo_keeps_dotted_exchange_suffix_when_it_has_a_price():
+    quote, seen = _fetch_with_captured_symbol("VOD.L", {"VOD.L"})
+    assert seen == ["VOD.L"]
+    assert quote.ticker == "VOD.L"
+    assert quote.quote_url == "https://finance.yahoo.com/quote/VOD.L"
+
+
 def test_yahoo_keeps_exchange_suffix():
-    quote, seen = _fetch_with_captured_symbol("7203.T")
+    quote, seen = _fetch_with_captured_symbol("7203.T", {"7203.T"})
     assert seen == ["7203.T"]
     assert quote.ticker == "7203.T"
     assert quote.quote_url == "https://finance.yahoo.com/quote/7203.T"
+
+
+def test_yahoo_dotted_failure_without_fallback_price_keeps_original_error():
+    quote, seen = _fetch_with_captured_symbol("BRK.B", set())
+    assert seen == ["BRK.B", "BRK-B"]
+    assert quote.price is None
+    assert quote.quote_url == "https://finance.yahoo.com/quote/BRK.B"
 
 
 @pytest.mark.asyncio
