@@ -110,7 +110,7 @@ The **Issue is the spec. The chat is not.**
 - Every product change lands via a GitHub PR into `main`. Base is not `develop`.
 - Body from `.github/PULL_REQUEST_TEMPLATE.md`: summary, `Closes #N` or `Refs #N`, work type, test plan (automated: `pytest` / `ruff check .`; manual: Telegram `/check` and/or `curl http://localhost:8080`).
 - CI must be green unless CI is broken **and** a separate Issue exists. Do not claim CI passed.
-- Squash merge. PR title = conventional subject (`feat: …`). Delete the branch after merge.
+- ALWAYS merge with merge commits (`--no-ff`), NEVER squash. PR title = conventional subject (`feat: …`). Delete the branch after merge.
 - CI does not replace manual verification.
 
 ## Changelog
