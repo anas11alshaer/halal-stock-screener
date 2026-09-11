@@ -26,6 +26,11 @@ jobs:
     needs: host
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Deploys to a single host/container must not overlap; queue them so
+    # the newest push always ends up serving production.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     steps:
       # Pinned to the v4 major tag (same as the host job): stable API while
       # still receiving security fixes. No third-party SSH/scp actions are
@@ -37,10 +42,15 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          if [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "::error::SSH_KNOWN_HOSTS secret is missing — generate it once with 'ssh-keyscan -H <host>' and store the output as a repository secret"
+            exit 1
+          fi
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
         env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
       - name: Transfer files (mirrors deploy.bat step 1)
         run: |
           ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" "rm -rf ~/stock-screener/src"
@@ -51,7 +61,7 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
       - name: Build and recreate container (mirrors deploy.bat step 2)
         run: |
-          ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" "cd ~/stock-screener && docker build -t stock-screener-bot:${GITHUB_SHA} -t stock-screener-bot:latest . && docker stop stock-screener || true && docker rm stock-screener || true && docker run -d --name stock-screener --restart unless-stopped --shm-size=256m --env-file .env -v \$(pwd)/data:/app/data stock-screener-bot:${GITHUB_SHA}"
+          ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" "cd ~/stock-screener && docker build -t stock-screener-bot:${GITHUB_SHA} -t stock-screener-bot:latest . && (docker stop stock-screener || true) && (docker rm stock-screener || true) && docker run -d --name stock-screener --restart unless-stopped --shm-size=256m --env-file .env -v \$(pwd)/data:/app/data stock-screener-bot:${GITHUB_SHA}"
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
@@ -61,7 +71,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" bash <<'EOF'
           for i in $(seq 1 12); do
-            if docker exec stock-screener python -c "import urllib.request; assert urllib.request.urlopen('http://localhost:8080/', timeout=5).read() == b'OK'"; then
+            if docker exec stock-screener python -c "import os, urllib.request; port = os.environ.get('PORT', '8080'); assert urllib.request.urlopen(f'http://localhost:{port}/', timeout=5).read() == b'OK'"; then
               echo "HEALTHY after attempt $i"
               exit 0
             fi
