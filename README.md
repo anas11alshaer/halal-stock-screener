@@ -52,7 +52,10 @@ transferred). Each build is tagged `stock-screener-bot:<sha>` plus `:latest`.
 
 Required GitHub secrets (repo Settings → Secrets → Actions; values are never
 committed): `SSH_HOST` (host address), `SSH_USER` (login user),
-`SSH_KEY` (private key for that host).
+`SSH_KEY` (private key for that host), `SSH_KNOWN_HOSTS` (pinned host key:
+run `ssh-keyscan -H <host>` once from a trusted network, verify the fingerprint
+out of band, and paste the full output). Concurrent pushes to `main` deploy
+serially, newest last.
 
 Post-deploy, the job probes `GET /` inside the container (must return `OK`,
 12 × 5s retries) and fails loudly — with a log tail — if the container is
