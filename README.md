@@ -67,7 +67,10 @@ SCREENING_PROVIDER_PLUGINS=scrapers.musaffa:MusaffaScraper,scrapers.zoya:ZoyaScr
 EVIDENCE_REVIEWER_PLUGIN=
 IMAGE_EXTRACTOR_PLUGIN=
 DELIVERY_CHANNEL_PLUGINS=channels.telegram:TelegramChannel
+PRICE_PROVIDER_PLUGIN=prices.yahoo:YahooPriceProvider
 ```
+
+`PRICE_PROVIDER_PLUGIN` selects the `/price` live-quote provider; the default Yahoo provider needs no API key.
 
 Reorder, remove, or replace a path without changing orchestration, voting, caching, or
 rendering code. Optional keyed providers are:
