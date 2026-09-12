@@ -26,7 +26,7 @@ Keep user-facing bullets. Internal refactors stay out unless they change how som
 
 ### Fixed
 
-- -
+- Slack `/price AAPL MSFT` command showing live Yahoo prices with day-change % and quote links (up to 25 tickers, uncached) — via slash command, `@mention /price ...`, or plain `/price ...` message; previously any `/price` text ran a full halal screen.
 
 ## [0.2.1] — 2026-08-21
 

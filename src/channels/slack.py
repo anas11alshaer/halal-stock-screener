@@ -10,12 +10,15 @@ import httpx
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
-from config import SLACK_APP_TOKEN, SLACK_BOT_TOKEN
+from channels.telegram import _render_price_message
+from config import MAX_TICKERS_PER_REQUEST, SLACK_APP_TOKEN, SLACK_BOT_TOKEN
+from plugins import load_price_provider
 from screener import StockScreener
 
 logger = logging.getLogger(__name__)
 
 _MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
+_PRICE_RE = re.compile(r"^/price(\s|$)", re.IGNORECASE)
 _TOKEN_RE = re.compile(r'<a href="([^"]+)">([^<]*)</a>|</?(b|code|i|pre)>')
 _TAG_MARKUP = {"b": "*", "code": "`", "i": "_", "pre": "```"}
 
@@ -32,6 +35,7 @@ Or send an image with stock tickers in a DM.
 *Commands*
 `/check AAPL MSFT` - Check tickers
 `/check Apple` - Resolve a company name
+`/price AAPL MSFT` - Live prices
 `/history` - Recent checks
 `/stats` - Your statistics"""
 
@@ -67,9 +71,16 @@ def to_slack_mrkdwn(message: str) -> str:
 class SlackChannel:
     """Receive Slack events over Socket Mode and deliver screening responses."""
 
-    def __init__(self, screening_service=None):
+    def __init__(self, screening_service=None, price_provider=None):
         self.screener = screening_service or StockScreener()
+        self._price_provider = price_provider
         self.app = None
+
+    @property
+    def price_provider(self):
+        if self._price_provider is None:
+            self._price_provider = load_price_provider()
+        return self._price_provider
 
     async def handle_mention(self, event, say, client):
         text = _MENTION_RE.sub("", event.get("text", "")).strip()
@@ -77,6 +88,9 @@ class SlackChannel:
             text = text[6:].strip()
         if not text or text.lower() == "help":
             await say(HELP_MESSAGE)
+            return
+        if _PRICE_RE.match(text):
+            await self._price_text_and_reply(text, say, client)
             return
         await self._screen_text_and_reply(text, event["user"], say, client)
 
@@ -104,6 +118,9 @@ class SlackChannel:
         if text.lower() in ("help", "start", "/start", "/help"):
             await say(HELP_MESSAGE)
             return
+        if _PRICE_RE.match(text):
+            await self._price_text_and_reply(text, say, client)
+            return
         await self._screen_text_and_reply(text, event["user"], say, client)
 
     async def check_command(self, ack, respond, command, client):
@@ -114,6 +131,15 @@ class SlackChannel:
             return
         response = await self.screener.screen_text(text, command["user_id"])
         await self._respond_with_response(response, respond, client, command)
+
+    async def price_command(self, ack, respond, command, client):
+        await ack()
+        args = (command.get("text") or "").split()
+        if not args:
+            await respond("Usage: `/price AAPL MSFT`")
+            return
+        message = await self._fetch_price_message(args)
+        await respond(text=message, response_type="ephemeral")
 
     async def history_command(self, ack, respond, command, client):
         await ack()
@@ -167,6 +193,21 @@ class SlackChannel:
         status = await say("Checking...")
         response = await self.screener.screen_text(text, user_id)
         await self._deliver_response(response, status, say, client)
+
+    async def _price_text_and_reply(self, text, say, client):
+        args = text.split()[1:]
+        if not args:
+            await say("Usage: `/price AAPL MSFT`")
+            return
+        status = await say("Fetching prices...")
+        message = await self._fetch_price_message(args)
+        await client.chat_update(channel=status["channel"], ts=status["ts"], text=message)
+
+    async def _fetch_price_message(self, args):
+        tickers = [arg.strip().upper() for arg in args if arg.strip()]
+        truncated = len(tickers) > MAX_TICKERS_PER_REQUEST
+        quotes = await self.price_provider.get_prices(tickers[:MAX_TICKERS_PER_REQUEST])
+        return to_slack_mrkdwn(_render_price_message(quotes, truncated))
 
     async def _handle_files(self, event, say, client):
         files = event.get("files") or []
@@ -225,6 +266,7 @@ class SlackChannel:
         self.app.event("app_mention")(self.handle_mention)
         self.app.event("message")(self.handle_message)
         self.app.command("/check")(self.check_command)
+        self.app.command("/price")(self.price_command)
         self.app.command("/history")(self.history_command)
         self.app.command("/stats")(self.stats_command)
         self.app.error(self.handle_error)
