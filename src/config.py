@@ -71,6 +71,10 @@ DELIVERY_CHANNEL_PLUGINS = [
 ]
 IMAGE_EXTRACTOR_PLUGIN = os.getenv("IMAGE_EXTRACTOR_PLUGIN", "image_parser:GeminiImageExtractor")
 PRICE_PROVIDER_PLUGIN = os.getenv("PRICE_PROVIDER_PLUGIN", "prices.yahoo:YahooPriceProvider")
+# Kill switch for the /price command; the provider stays so re-enable is config-only.
+PRICE_COMMAND_ENABLED = (
+    os.getenv("PRICE_COMMAND_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+)
 
 # Gemini model rotation (first model has highest rate limits)
 # Each request cycles to the next model; counter resets daily

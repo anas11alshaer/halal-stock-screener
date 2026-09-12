@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import MAX_TICKERS_PER_REQUEST, TELEGRAM_BOT_TOKEN
+from config import MAX_TICKERS_PER_REQUEST, PRICE_COMMAND_ENABLED, TELEGRAM_BOT_TOKEN
 from plugins import load_price_provider
 from screener import StockScreener
 
@@ -70,7 +70,10 @@ class TelegramChannel:
         return self._price_provider
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        message = """<b>Halal Stock Screener</b>
+        price_line = (
+            "/price <code>AAPL MSFT</code> - Live prices\n" if PRICE_COMMAND_ENABLED else ""
+        )
+        message = f"""<b>Halal Stock Screener</b>
 
 Check stocks and ETFs using configurable independent screening sources.
 Confirmed sources vote; a tied vote is treated as Not Halal.
@@ -83,8 +86,7 @@ Or send an image with stock tickers.
 <b>Commands</b>
 /check <code>AAPL MSFT</code> - Check tickers
 /check <code>Apple</code> - Resolve a company name
-/price <code>AAPL MSFT</code> - Live prices
-/history - Recent checks
+{price_line}/history - Recent checks
 /stats - Your statistics"""
         await update.message.reply_text(message, parse_mode="HTML")
 
@@ -103,6 +105,12 @@ Or send an image with stock tickers.
         await self._deliver_response(status_message, update, response)
 
     async def price_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not PRICE_COMMAND_ENABLED:
+            await update.message.reply_text(
+                "The <code>/price</code> command is currently disabled.",
+                parse_mode="HTML",
+            )
+            return
         if not context.args:
             await update.message.reply_text(
                 "Usage: <code>/price AAPL MSFT</code>",
