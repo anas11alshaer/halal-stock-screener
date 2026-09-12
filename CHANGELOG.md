@@ -4,6 +4,14 @@ Keep user-facing bullets. Internal refactors stay out unless they change how som
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-09-12
+
+### Changed
+
+- `/price` live-price command is disabled by default in Telegram and Slack behind `PRICE_COMMAND_ENABLED=false`; the provider implementation stays in the tree and re-enabling is config-only (`PRICE_COMMAND_ENABLED=true`).
+
+## [0.3.0] — 2026-09-12
+
 ### Added
 
 - Automatic deploy on merge to `main`: the CI `deploy` job (after green lint+tests) replays the manual deploy flow over SSH, tags each image `<sha>` + `latest`, and fails loudly on post-deploy health check; needs `SSH_HOST`/`SSH_USER`/`SSH_KEY` secrets; rollback = re-run previous sha image.

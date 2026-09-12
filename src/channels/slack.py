@@ -11,7 +11,12 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
 from channels.telegram import _render_price_message
-from config import MAX_TICKERS_PER_REQUEST, SLACK_APP_TOKEN, SLACK_BOT_TOKEN
+from config import (
+    MAX_TICKERS_PER_REQUEST,
+    PRICE_COMMAND_ENABLED,
+    SLACK_APP_TOKEN,
+    SLACK_BOT_TOKEN,
+)
 from plugins import load_price_provider
 from screener import StockScreener
 
@@ -38,6 +43,13 @@ Or send an image with stock tickers in a DM.
 `/price AAPL MSFT` - Live prices
 `/history` - Recent checks
 `/stats` - Your statistics"""
+
+
+def _help_message() -> str:
+    """Help text actually sent; hides /price while the kill switch is off."""
+    if PRICE_COMMAND_ENABLED:
+        return HELP_MESSAGE
+    return "\n".join(line for line in HELP_MESSAGE.splitlines() if "/price" not in line)
 
 
 def _slack_escape(text: str) -> str:
@@ -87,7 +99,7 @@ class SlackChannel:
         if text.lower().startswith("check "):
             text = text[6:].strip()
         if not text or text.lower() == "help":
-            await say(HELP_MESSAGE)
+            await say(_help_message())
             return
         if _PRICE_RE.match(text):
             await self._price_text_and_reply(text, say, client)
@@ -116,7 +128,7 @@ class SlackChannel:
         if bot_user_id and f"<@{bot_user_id}>" in text:
             return
         if text.lower() in ("help", "start", "/start", "/help"):
-            await say(HELP_MESSAGE)
+            await say(_help_message())
             return
         if _PRICE_RE.match(text):
             await self._price_text_and_reply(text, say, client)
@@ -134,6 +146,9 @@ class SlackChannel:
 
     async def price_command(self, ack, respond, command, client):
         await ack()
+        if not PRICE_COMMAND_ENABLED:
+            await respond("The `/price` command is currently disabled.")
+            return
         args = (command.get("text") or "").split()
         if not args:
             await respond("Usage: `/price AAPL MSFT`")
@@ -195,6 +210,9 @@ class SlackChannel:
         await self._deliver_response(response, status, say, client)
 
     async def _price_text_and_reply(self, text, say, client):
+        if not PRICE_COMMAND_ENABLED:
+            await say("The `/price` command is currently disabled.")
+            return
         args = text.split()[1:]
         if not args:
             await say("Usage: `/price AAPL MSFT`")

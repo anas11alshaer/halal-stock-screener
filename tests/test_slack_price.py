@@ -4,11 +4,21 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from channels.slack import HELP_MESSAGE, SlackChannel
 from config import MAX_TICKERS_PER_REQUEST
 from prices.base import PriceProvider, PriceQuote
+
+
+@pytest.fixture(autouse=True)
+def _enable_price_command(monkeypatch):
+    """This file covers the retained implementation, so force the flag on."""
+    import channels.slack as slack_module
+
+    monkeypatch.setattr(slack_module, "PRICE_COMMAND_ENABLED", True)
 
 
 class FakeScreener:

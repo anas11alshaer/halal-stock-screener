@@ -17,6 +17,14 @@ from prices.base import PriceProvider, PriceQuote
 from prices.yahoo import YahooPriceProvider
 
 
+@pytest.fixture(autouse=True)
+def _enable_price_command(monkeypatch):
+    """This file covers the retained implementation, so force the flag on."""
+    import channels.telegram as telegram_module
+
+    monkeypatch.setattr(telegram_module, "PRICE_COMMAND_ENABLED", True)
+
+
 class FakePriceProvider(PriceProvider):
     def __init__(self, quotes=None):
         self.seen = None
