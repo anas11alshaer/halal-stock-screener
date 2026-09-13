@@ -1,6 +1,7 @@
 """Dynamic plugin loading for screening providers."""
 
 import importlib
+import logging
 
 from config import (
     DELIVERY_CHANNEL_PLUGINS,
@@ -10,6 +11,11 @@ from config import (
 )
 from image_extractors import ImageExtractor
 from scrapers.base import BaseScraper
+
+logger = logging.getLogger(__name__)
+
+# Host .env is not transferred by deploy; leftover Slack plugin must not crash Telegram.
+_RETIRED_DELIVERY_CHANNELS = frozenset({"channels.slack:SlackChannel"})
 
 
 def load_screening_providers(
@@ -50,8 +56,13 @@ def load_delivery_channels(plugin_paths: list[str] | None = None) -> list:
     """Instantiate every configured user-facing transport."""
     channels: list = []
     for plugin_path in plugin_paths or DELIVERY_CHANNEL_PLUGINS:
+        if plugin_path in _RETIRED_DELIVERY_CHANNELS:
+            logger.warning("Ignoring retired delivery channel %s", plugin_path)
+            continue
         module_name, class_name = plugin_path.split(":", 1)
         channels.append(getattr(importlib.import_module(module_name), class_name)())
+    if not channels:
+        raise ValueError("No delivery channels configured")
     return channels
 
 

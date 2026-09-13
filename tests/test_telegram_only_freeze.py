@@ -91,3 +91,28 @@ def test_slack_deps_removed_from_requirements():
     text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
     assert "slack-bolt" not in text
     assert "aiohttp" not in text
+
+
+def test_retired_slack_plugin_path_is_ignored(monkeypatch):
+    created = []
+
+    class FakeChannel:
+        def __init__(self):
+            created.append(self)
+
+    import channels.telegram as telegram_module
+    from plugins import load_delivery_channels
+
+    monkeypatch.setattr(telegram_module, "TelegramChannel", FakeChannel)
+    channels = load_delivery_channels(
+        ["channels.telegram:TelegramChannel", "channels.slack:SlackChannel"]
+    )
+    assert channels == created
+    assert len(channels) == 1
+
+
+def test_slack_only_plugin_list_raises():
+    from plugins import load_delivery_channels
+
+    with pytest.raises(ValueError, match="No delivery channels configured"):
+        load_delivery_channels(["channels.slack:SlackChannel"])
