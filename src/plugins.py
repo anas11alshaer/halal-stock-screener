@@ -6,11 +6,9 @@ from config import (
     DELIVERY_CHANNEL_PLUGINS,
     EVIDENCE_REVIEWER_PLUGIN,
     IMAGE_EXTRACTOR_PLUGIN,
-    PRICE_PROVIDER_PLUGIN,
     SCREENING_PROVIDER_PLUGINS,
 )
 from image_extractors import ImageExtractor
-from prices.base import PriceProvider
 from scrapers.base import BaseScraper
 
 
@@ -61,21 +59,6 @@ def load_delivery_channel(plugin_path: str | None = None):
     """Load the first configured user-facing transport."""
     paths = [plugin_path] if plugin_path else None
     return load_delivery_channels(paths)[0]
-
-
-def load_price_provider(plugin_path: str | None = None) -> PriceProvider:
-    """Load the configured live price provider."""
-    path = PRICE_PROVIDER_PLUGIN if plugin_path is None else plugin_path
-    try:
-        module_name, class_name = path.split(":", 1)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid price provider plugin {path!r}; expected module:Class"
-        ) from exc
-    provider = getattr(importlib.import_module(module_name), class_name)()
-    if not isinstance(provider, PriceProvider):
-        raise TypeError(f"Price provider {path!r} must extend PriceProvider")
-    return provider
 
 
 def load_image_extractor(image_cache=None, plugin_path: str | None = None):
