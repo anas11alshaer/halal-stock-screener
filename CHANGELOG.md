@@ -4,6 +4,13 @@ Keep user-facing bullets. Internal refactors stay out unless they change how som
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-13
+
+### Removed
+
+- Slack delivery channel (`channels.slack:SlackChannel`, `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN`, `slack-bolt`). Telegram is the human UI.
+- `/price` live-quote command and `src/prices/` provider plugin (`PRICE_PROVIDER_PLUGIN`, `PRICE_COMMAND_ENABLED`). Quotes live in whale_scout.
+
 ## [0.3.1] — 2026-09-12
 
 ### Changed

@@ -20,10 +20,6 @@ LOGS_DIR.mkdir(exist_ok=True)
 # Telegram configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
-# Slack configuration (Socket Mode: websocket connection, no public URL needed)
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
-SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
-
 # Gemini API configuration (single key)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
@@ -70,11 +66,6 @@ DELIVERY_CHANNEL_PLUGINS = [
     if value.strip()
 ]
 IMAGE_EXTRACTOR_PLUGIN = os.getenv("IMAGE_EXTRACTOR_PLUGIN", "image_parser:GeminiImageExtractor")
-PRICE_PROVIDER_PLUGIN = os.getenv("PRICE_PROVIDER_PLUGIN", "prices.yahoo:YahooPriceProvider")
-# Kill switch for the /price command; the provider stays so re-enable is config-only.
-PRICE_COMMAND_ENABLED = (
-    os.getenv("PRICE_COMMAND_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-)
 
 # Gemini model rotation (first model has highest rate limits)
 # Each request cycles to the next model; counter resets daily

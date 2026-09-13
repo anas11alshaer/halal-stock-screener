@@ -5,8 +5,8 @@ Filled from `D:\projects\guide\templates\AGENTS.md` for **this** repository. Ins
 ## Project Overview
 
 - **Name:** halal-stock-screener
-- **Purpose:** Private hosted service that resolves stock/ETF names and tickers, queries configurable Shariah-screening providers, and shows every verdict, failure, and evidence URL. Default free profile is Musaffa public pages, Zoya public stock pages, and Daleel. Optional keyed providers, Gemini image/evidence plugins, Slack, and an internal `/screen` JSON API exist; they are off until configured.
-- **Target audience:** The installer (single-user private bot). Telegram (and optional Slack) is the human UI. `whale_scout` may call `GET /screen` on the Docker network when `SCREEN_API_TOKEN` is set.
+- **Purpose:** Private hosted service that resolves stock/ETF names and tickers, queries configurable Shariah-screening providers, and shows every verdict, failure, and evidence URL. Default free profile is Musaffa public pages, Zoya public stock pages, and Daleel. Optional keyed providers, Gemini image/evidence plugins, and an internal `/screen` JSON API exist; they are off until configured.
+- **Target audience:** The installer (single-user private bot). Telegram is the human UI. `whale_scout` may call `GET /screen` on the Docker network when `SCREEN_API_TOKEN` is set.
 - **Kind:** service — Python process: health HTTP server plus replaceable delivery channels.
 
 ## Tech Stack
@@ -14,7 +14,7 @@ Filled from `D:\projects\guide\templates\AGENTS.md` for **this** repository. Ins
 Anything not listed here must not be added without an explicit why, pin, and license.
 
 - **Languages:** Python 3.12 (CI, README, ruff `target-version = "py312"`)
-- **Frameworks / libraries:** `python-telegram-bot>=21.0`, `slack-bolt==1.30.0`, `aiohttp==3.14.3`, `httpx>=0.27.0`, `yfinance>=0.2.0`, `google-genai>=1.0.0`, `python-dotenv>=1.0.0`, `pytest>=8.0.0`, `pytest-asyncio>=0.24.0`
+- **Frameworks / libraries:** `python-telegram-bot>=21.0`, `httpx>=0.27.0`, `yfinance>=0.2.0`, `google-genai>=1.0.0`, `python-dotenv>=1.0.0`, `pytest>=8.0.0`, `pytest-asyncio>=0.24.0`
 - **Databases:** SQLite via stdlib `sqlite3` → `data/stock_screener.db`
 - **Package manager:** pip + `requirements.txt` (`pyproject.toml` is ruff-only; there is no `pip install -e ".[dev]"`)
 - **Language pack(s) to follow:** python
@@ -34,7 +34,7 @@ halal-stock-screener/
   src/reviewer.py                 # Optional Gemini parse-failure review
   src/image_parser.py             # Gemini ImageExtractor implementation
   src/scrapers/                   # BaseScraper + musaffa, zoya, daleel, optional keyed
-  src/channels/                   # telegram.py, slack.py
+  src/channels/                   # telegram.py
   src/image_extractors/           # ImageExtractor ABC
   tests/                          # pytest; each file inserts ../src on sys.path
   docs/adr/                       # 0001–0008; current architecture is 0008
@@ -70,7 +70,7 @@ halal-stock-screener/
 - **Exports / public API:** Not an installed package. Plugin contract is `module:Class`. Providers implement `source_name` + `_fetch_single`. Image extractors extend `ImageExtractor.extract_tickers`. Channels expose `run()`
 - **Lint / format:** ruff — `pyproject.toml`. CI runs `ruff check .` only (not `ruff format --check`). Line length 100. Existing `ignore` list is intentional (including `BLE001` for provider/Gemini resilience)
 - **Comments:** why, not what. Module docstring is one-sentence purpose. Logger is `logging.getLogger(__name__)`
-- **Patterns:** dataclasses for results; enums for `ComplianceStatus` / `ResultState`; ABC + `@abstractmethod` for plugins. Fakes in tests subclass `BaseScraper`. User-facing HTML is escaped (`html.escape`); Slack re-escapes via `to_slack_mrkdwn`
+- **Patterns:** dataclasses for results; enums for `ComplianceStatus` / `ResultState`; ABC + `@abstractmethod` for plugins. Fakes in tests subclass `BaseScraper`. User-facing HTML is escaped (`html.escape`)
 
 ## Tests
 
@@ -92,7 +92,7 @@ House GitHub Flow. Recipes: `D:\projects\guide\git\` (start at `git/00-where-am-
 - Conventional Commits: `feat` / `fix` / `refactor` / `docs` / `test` / `chore`. Put `Fixes #N` / `Closes #N` on the **PR**, not every commit
 - Do not `git add .` until you have read `git status`. Do not commit `.env`, tokens, `data/musaffa_session.json`, or `data/oracle_cloud`
 - Do not mix a feature with a repo-wide reformat in one PR
-- Tags are `vX.Y.Z` SemVer **when you mean to ship**. Merging to `main` is not a tag. Current shipped tag is `v0.2.1`
+- Tags are `vX.Y.Z` SemVer **when you mean to ship**. Merging to `main` is not a tag. Current shipped tag is `v0.4.0`
 
 ## GitHub Issues & PRs
 
@@ -147,7 +147,7 @@ The **Issue is the spec. The chat is not.**
 
 ### This repo
 
-- **Secrets:** `.env` is gitignored; template is `.env.example`. Never commit `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, Slack tokens, `SCREEN_API_TOKEN`, provider API keys, or `data/musaffa_session.json`. Mute httpx logs: Telegram URLs contain the bot token.
+- **Secrets:** `.env` is gitignored; template is `.env.example`. Never commit `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `SCREEN_API_TOKEN`, provider API keys, or `data/musaffa_session.json`. Mute httpx logs: Telegram URLs contain the bot token.
 - **Security / product policy:** Private single-user install; installer owns provider ToS/quotas. Default install stays free. Daleel is calculation without a Sharia board — keep the UI caveat. `GET /screen` is 403 until `SCREEN_API_TOKEN` is set; auth is `Authorization: Bearer …` (`hmac.compare_digest`). `MAX_TICKERS_PER_REQUEST = 25`.
 - **Prohibited libraries / patterns:** Do not reintroduce Playwright/Chromium. Do not hard-wire providers, Gemini, or Telegram in orchestration.
 - **Behavioral:** Vote only confirmed verdicts; unique majority wins; any top-count tie → `NOT_HALAL`; one confirmed result is provisional. Operational failures never vote and are not cached as compliance except `NOT_COVERED`. Gemini reviewer may only review bounded `PARSE_ERROR` text — no browsing, no invented evidence. Quota on one provider must not block others. Duplicate `source_name` is a hard error. `CACHE_SCHEMA_VERSION = 3`. `.env.example` blanks Gemini plugins (token-free default); `config.py` still defaults those plugin strings on if the env keys are omitted — treat `.env.example` as the intended free-profile docs.
@@ -165,7 +165,7 @@ RUN:     python src/bot.py
 Copy `.env.example` → `.env` and fill tokens before `RUN`. CI also uses `pytest -o asyncio_mode=auto`.
 
 - **CI:** GitHub Actions `ci` on `pull_request` and `push` to `main`: Python 3.12, `pip install -r requirements.txt`, `pip install ruff pytest pytest-asyncio`, `ruff check .`, `pytest -o asyncio_mode=auto` with dummy `GEMINI_API_KEY` / `TELEGRAM_BOT_TOKEN` (`.github/workflows/ci.yml`)
-- **Manual verification:** Set `TELEGRAM_BOT_TOKEN` in `.env`, run `python src/bot.py`, `/start` and `/check AAPL` in Telegram; `curl http://localhost:8080` → `OK`. Slack needs `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` and `channels.slack:SlackChannel` appended. `/screen` needs `SCREEN_API_TOKEN`
+- **Manual verification:** Set `TELEGRAM_BOT_TOKEN` in `.env`, run `python src/bot.py`, `/start` and `/check AAPL` in Telegram; `curl http://localhost:8080` → `OK`. `/screen` needs `SCREEN_API_TOKEN`
 
 ## Context Pointers
 

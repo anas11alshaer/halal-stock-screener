@@ -1,17 +1,21 @@
 """Dynamic plugin loading for screening providers."""
 
 import importlib
+import logging
 
 from config import (
     DELIVERY_CHANNEL_PLUGINS,
     EVIDENCE_REVIEWER_PLUGIN,
     IMAGE_EXTRACTOR_PLUGIN,
-    PRICE_PROVIDER_PLUGIN,
     SCREENING_PROVIDER_PLUGINS,
 )
 from image_extractors import ImageExtractor
-from prices.base import PriceProvider
 from scrapers.base import BaseScraper
+
+logger = logging.getLogger(__name__)
+
+# Host .env is not transferred by deploy; leftover Slack plugin must not crash Telegram.
+_RETIRED_DELIVERY_CHANNELS = frozenset({"channels.slack:SlackChannel"})
 
 
 def load_screening_providers(
@@ -52,8 +56,13 @@ def load_delivery_channels(plugin_paths: list[str] | None = None) -> list:
     """Instantiate every configured user-facing transport."""
     channels: list = []
     for plugin_path in plugin_paths or DELIVERY_CHANNEL_PLUGINS:
+        if plugin_path in _RETIRED_DELIVERY_CHANNELS:
+            logger.warning("Ignoring retired delivery channel %s", plugin_path)
+            continue
         module_name, class_name = plugin_path.split(":", 1)
         channels.append(getattr(importlib.import_module(module_name), class_name)())
+    if not channels:
+        raise ValueError("No delivery channels configured")
     return channels
 
 
@@ -61,21 +70,6 @@ def load_delivery_channel(plugin_path: str | None = None):
     """Load the first configured user-facing transport."""
     paths = [plugin_path] if plugin_path else None
     return load_delivery_channels(paths)[0]
-
-
-def load_price_provider(plugin_path: str | None = None) -> PriceProvider:
-    """Load the configured live price provider."""
-    path = PRICE_PROVIDER_PLUGIN if plugin_path is None else plugin_path
-    try:
-        module_name, class_name = path.split(":", 1)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid price provider plugin {path!r}; expected module:Class"
-        ) from exc
-    provider = getattr(importlib.import_module(module_name), class_name)()
-    if not isinstance(provider, PriceProvider):
-        raise TypeError(f"Price provider {path!r} must extend PriceProvider")
-    return provider
 
 
 def load_image_extractor(image_cache=None, plugin_path: str | None = None):

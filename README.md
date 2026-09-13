@@ -5,7 +5,7 @@ Shariah-screening providers, and shows every verdict, failure, and evidence sour
 
 ## Status
 
-usable — current version `v0.2.1` (main at `da0cf2e`)
+usable — current version `v0.4.0`
 
 ## What you need
 
@@ -39,8 +39,6 @@ Health check: `curl http://localhost:8080` → `OK` (threaded server on `$PORT`)
 
 Bot commands: `/start`, `/help`, `/check AAPL MSFT`, `/check Apple`, `/history`,
 `/stats`; or send a ticker, company/fund name, or portfolio screenshot.
-(The `/price` live-quote command is disabled by default; set
-`PRICE_COMMAND_ENABLED=true` to re-enable it.)
 
 ## Deploy
 
@@ -92,11 +90,7 @@ SCREENING_PROVIDER_PLUGINS=scrapers.musaffa:MusaffaScraper,scrapers.zoya:ZoyaScr
 EVIDENCE_REVIEWER_PLUGIN=
 IMAGE_EXTRACTOR_PLUGIN=
 DELIVERY_CHANNEL_PLUGINS=channels.telegram:TelegramChannel
-PRICE_PROVIDER_PLUGIN=prices.yahoo:YahooPriceProvider
-PRICE_COMMAND_ENABLED=false
 ```
-
-`PRICE_PROVIDER_PLUGIN` selects the `/price` live-quote provider; the default Yahoo provider needs no API key. The command itself is disabled by default (`PRICE_COMMAND_ENABLED=false`); set it to `true` to re-enable it.
 
 Reorder, remove, or replace a path without changing orchestration, voting, caching, or
 rendering code. Optional keyed providers are:
@@ -115,14 +109,7 @@ To enable image ticker extraction, set `IMAGE_EXTRACTOR_PLUGIN` to
 `image_extractors.base.ImageExtractor` and implement `extract_tickers(image_data)`.
 
 `DELIVERY_CHANNEL_PLUGINS` accepts a comma-separated list; each channel runs in its
-own thread. To serve Slack alongside Telegram, append `channels.slack:SlackChannel`
-and set `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_APP_TOKEN` (`xapp-…`). The Slack
-channel uses Socket Mode, so no public URL is required. It answers ticker text in
-channels it has joined (no `@` required), `@bot AAPL` mentions, DM messages and
-image uploads, and `/check`, `/history`, `/stats` slash commands (`/price` too when
-`PRICE_COMMAND_ENABLED=true`; register those
-command names in the Slack app settings). Slack will deliver every message in
-those channels, so invite the bot only to ticker channels.
+own thread. Telegram is the human UI.
 
 Confirmed providers vote by status. A unique majority wins, any tied highest vote is
 reported as `NOT_HALAL`, and one confirmed result is visibly marked provisional.
